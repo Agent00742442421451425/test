@@ -8,8 +8,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
 
-# Telegram ID администратора — бот отвечает только ему
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7210745918"))
+# Telegram ID администраторов — бот отвечает только им
+# В .env: ADMIN_IDS=7210745918,5568314329
+_admin_ids_raw = os.getenv("ADMIN_IDS", "7210745918,5568314329")
+ADMIN_IDS = [int(x.strip()) for x in _admin_ids_raw.split(",") if x.strip()]
 
 # Yandex Market API
 API_TOKEN = os.getenv("YANDEX_API_TOKEN")

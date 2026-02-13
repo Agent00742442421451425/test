@@ -19,7 +19,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, ADMIN_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, ADMIN_IDS
 from yandex_api import YandexMarketAPI
 
 # Логирование
@@ -36,7 +36,7 @@ known_order_ids = set()
 def is_admin(update: Update) -> bool:
     """Проверить, является ли пользователь администратором."""
     user_id = update.effective_user.id if update.effective_user else None
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
 
 # Путь к файлу склада аккаунтов
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
@@ -919,12 +919,12 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         )],
                     ])
 
-                # Отправляем уведомления: в группу + админу в ЛС
+                # Отправляем уведомления: в группу + всем админам в ЛС
                 targets = []
                 if TELEGRAM_GROUP_ID:
                     targets.append(("группа", TELEGRAM_GROUP_ID))
-                if ADMIN_ID:
-                    targets.append(("админ", ADMIN_ID))
+                for admin_id in ADMIN_IDS:
+                    targets.append((f"админ {admin_id}", admin_id))
 
                 for label, chat_id in targets:
                     try:
@@ -970,7 +970,7 @@ def main():
     app.job_queue.run_repeating(poll_new_orders, interval=60, first=5)
 
     print("✅ Бот запущен! Polling заказов каждые 60 сек.")
-    print(f"👤 Админ ID: {ADMIN_ID}")
+    print(f"👤 Админы: {', '.join(str(a) for a in ADMIN_IDS)}")
     print(f"📢 Уведомления в группу: {TELEGRAM_GROUP_ID}")
 
     # Загружаем склад при старте

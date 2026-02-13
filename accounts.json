@@ -30,7 +30,7 @@
       "login": "test_win1@testmail.com",
       "password": "TestWin!2026",
       "2fa": "",
-      "used": false
+      "used": true
     },
     {
       "product": "ТЕСТ — Windows 10 Pro",
