@@ -19,7 +19,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, ADMIN_ID
 from yandex_api import YandexMarketAPI
 
 # Логирование
@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 # Хранилище уже обработанных заказов (для уведомлений)
 known_order_ids = set()
+
+
+def is_admin(update: Update) -> bool:
+    """Проверить, является ли пользователь администратором."""
+    user_id = update.effective_user.id if update.effective_user else None
+    return user_id == ADMIN_ID
 
 # Путь к файлу склада аккаунтов
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
@@ -129,11 +135,20 @@ def main_menu_keyboard():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start — показать главное меню."""
+    """Обработчик /start — показать главное меню (только админу)."""
+    if not is_admin(update):
+        logger.warning(
+            f"Неизвестный пользователь {update.effective_user.id} "
+            f"(@{update.effective_user.username}) попытался использовать /start"
+        )
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+
     await update.message.reply_text(
         "🟢 *Яндекс Маркет DBS Бот*\n\n"
         "Управление заказами магазина\n"
         "«Склад Ai Hub»\n\n"
+        f"👤 Админ: `{update.effective_user.id}`\n\n"
         "Выберите действие:",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown",
@@ -141,7 +156,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /menu — показать главное меню."""
+    """Обработчик /menu — показать главное меню (только админу)."""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+
     await update.message.reply_text(
         "📌 *Главное меню*\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(),
@@ -152,8 +171,13 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Обработка кнопок ───────────────────────────────────────────────
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на inline-кнопки."""
+    """Обработчик нажатий на inline-кнопки (только админ)."""
     query = update.callback_query
+
+    if not is_admin(update):
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
     await query.answer()
 
     data = query.data
@@ -428,7 +452,7 @@ async def auto_deliver_account(query, order_id):
             ]),
         )
 
-        # Уведомление в группу
+        # Уведомление в группу (ЛС админу уже получил ответ через query)
         if TELEGRAM_GROUP_ID:
             try:
                 await query.get_bot().send_message(
@@ -533,7 +557,11 @@ async def confirm_order(query, order_id):
 # ─── Команда /order ─────────────────────────────────────────────────
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /order <id>."""
+    """Обработчик /order <id> (только админ)."""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+
     if not context.args:
         await update.message.reply_text("Использование: `/order 54172200065`", parse_mode="Markdown")
         return
@@ -678,7 +706,11 @@ async def start_add_accounts(query, context):
 
 
 async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /add — быстрое добавление аккаунтов в одном сообщении."""
+    """Обработчик /add — быстрое добавление аккаунтов (только админ)."""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+
     text = update.message.text
     # Убираем саму команду /add из текста
     lines_text = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
@@ -781,9 +813,12 @@ def _parse_and_add_accounts(text):
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработчик текстовых сообщений.
+    Обработчик текстовых сообщений (только админ).
     Если включён режим добавления аккаунтов — парсим текст.
     """
+    if not is_admin(update):
+        return  # Не админ — игнорируем
+
     if not context.user_data.get("awaiting_accounts"):
         return  # Не в режиме добавления — игнорируем
 
@@ -884,17 +919,23 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         )],
                     ])
 
-                # Отправляем в группу
+                # Отправляем уведомления: в группу + админу в ЛС
+                targets = []
                 if TELEGRAM_GROUP_ID:
+                    targets.append(("группа", TELEGRAM_GROUP_ID))
+                if ADMIN_ID:
+                    targets.append(("админ", ADMIN_ID))
+
+                for label, chat_id in targets:
                     try:
                         await context.bot.send_message(
-                            chat_id=TELEGRAM_GROUP_ID,
+                            chat_id=chat_id,
                             text=text,
                             reply_markup=keyboard,
                             parse_mode="Markdown",
                         )
                     except Exception as e:
-                        logger.error(f"Ошибка отправки в группу: {e}")
+                        logger.error(f"Ошибка отправки в {label} ({chat_id}): {e}")
 
     except Exception as e:
         logger.error(f"Ошибка polling заказов: {e}")
@@ -928,7 +969,8 @@ def main():
     # Фоновая проверка новых заказов — каждые 60 секунд
     app.job_queue.run_repeating(poll_new_orders, interval=60, first=5)
 
-    print("✅ Бот запущен! Polling заказов каждые 30 сек.")
+    print("✅ Бот запущен! Polling заказов каждые 60 сек.")
+    print(f"👤 Админ ID: {ADMIN_ID}")
     print(f"📢 Уведомления в группу: {TELEGRAM_GROUP_ID}")
 
     # Загружаем склад при старте

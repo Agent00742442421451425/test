@@ -8,6 +8,9 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
 
+# Telegram ID администратора — бот отвечает только ему
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7210745918"))
+
 # Yandex Market API
 API_TOKEN = os.getenv("YANDEX_API_TOKEN")
 BUSINESS_ID = int(os.getenv("BUSINESS_ID", "216655442"))
