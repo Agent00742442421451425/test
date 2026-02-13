@@ -23,6 +23,78 @@
       "password": "Pass789!",
       "2fa": "",
       "used": true
+    },
+    {
+      "product": "ТЕСТ — Windows 10 Pro",
+      "sku": "5364535435636",
+      "login": "test_win1@testmail.com",
+      "password": "TestWin!2026",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Windows 10 Pro",
+      "sku": "5364535435636",
+      "login": "test_win2@testmail.com",
+      "password": "TestWin@Secure42",
+      "2fa": "ABCD-EFGH-1234",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Windows 10 Pro",
+      "sku": "5364535435636",
+      "login": "test_win3@testmail.com",
+      "password": "WinPro!Key99",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Office 365",
+      "sku": "office365sku",
+      "login": "test_office1@testmail.com",
+      "password": "OfficeTest!55",
+      "2fa": "BACKUP-OFFICE-001",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Office 365",
+      "sku": "office365sku",
+      "login": "test_office2@testmail.com",
+      "password": "Office@2026Pro",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Подписка Ai Hub",
+      "sku": "aihub_sub_sku",
+      "login": "test_aihub1@testmail.com",
+      "password": "AiHub!Test001",
+      "2fa": "2FA-AIHUB-XYZ",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — Подписка Ai Hub",
+      "sku": "aihub_sub_sku",
+      "login": "test_aihub2@testmail.com",
+      "password": "AiHubSafe@77",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — VPN Premium",
+      "sku": "vpn_premium_sku",
+      "login": "test_vpn1@testmail.com",
+      "password": "VPN!Secure2026",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "ТЕСТ — VPN Premium",
+      "sku": "vpn_premium_sku",
+      "login": "test_vpn2@testmail.com",
+      "password": "VpnPro@Fast88",
+      "2fa": "VPN-BACKUP-999",
+      "used": false
     }
   ]
 }

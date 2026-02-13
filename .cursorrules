@@ -1,0 +1,58 @@
+# ══════════════════════════════════════════════════════════════
+#  Правила проекта «Яндекс Маркет DBS Бот»
+# ══════════════════════════════════════════════════════════════
+
+## Git — коммиты
+
+- **Каждое изменение кода — коммит + push на master.**
+  После любого редактирования файлов (.py, .json, .txt и др.)
+  выполняй:
+    git add -A && git commit -m "описание" && git push origin master
+- Коммит-сообщение: короткое описание на русском, формат:
+    feat: ...   — новая функциональность
+    fix: ...    — исправление бага
+    refactor: ... — рефакторинг
+    chore: ...  — обслуживание, настройки
+- Не забывай: каждый коммит = точка отката.
+
+## Структура проекта
+
+- `bot.py`        — Telegram-бот (python-telegram-bot v20+)
+- `yandex_api.py` — HTTP-клиент для Yandex Market Partner API (httpx)
+- `config.py`     — конфигурация, секреты через .env
+- `main.py`       — точка входа (запуск бота)
+- `accounts.json` — склад аккаунтов для выдачи
+- `.env`          — секреты (НЕ коммитить!)
+
+## API — Яндекс Маркет (DBS)
+
+- Документация: https://yandex.ru/dev/market/partner-api/doc/ru/
+- OpenAPI: https://yandex.ru/dev/market/partner-api/doc/ru/concepts/openapi
+- GitHub: https://github.com/yandex-market/yandex-market-partner-api
+- Push-уведомления: https://yandex.ru/dev/market/partner-api/doc/ru/push-notifications/#how-to-start
+- Цепочка статусов DBS:
+    PROCESSING/STARTED → PROCESSING/READY_TO_SHIP → boxes → DELIVERY → DELIVERED
+- **НЕ прыгать через статусы!** Между шагами перечитывать заказ.
+- Content-Type НЕ ставить в дефолтных заголовках — httpx ставит автоматически.
+
+## Аккаунты (accounts.json)
+
+- Формат добавления через бота:  логин ; пароль ; 2fa
+- 2FA необязателен
+- Поле "used": true/false — использован ли аккаунт
+- Проверка дубликатов при добавлении
+
+## Стиль кода
+
+- Python 3.10+
+- Логирование через logging, не print (кроме main() startup info)
+- async/await для Telegram
+- httpx.Client для API (синхронный, обёрнут в asyncio.to_thread)
+- Все запросы логировать: URL, тело, статус ответа
+- Подробные сообщения об ошибках (код + тело ответа)
+
+## Тестирование
+
+- Перед пушем проверять линтер
+- Тестовые аккаунты в accounts.json — с пометкой "product": "ТЕСТ"
+- При отладке использовать test_bot.py для проверки отдельных функций
