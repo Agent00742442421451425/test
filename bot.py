@@ -14,6 +14,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -104,10 +106,9 @@ def build_support_message():
     """Сообщение для ручной обработки — отправка клиента в чат поддержки."""
     return (
         "👋 Здравствуйте!\n\n"
-        "Ваш заказ принят и передан менеджеру.\n"
-        "Данные для доступа будут отправлены вам в этот чат в ближайшее время.\n\n"
-        "Если у вас есть вопросы — напишите прямо сюда, менеджер ответит.\n\n"
-        "⏰ Среднее время обработки: 5-15 минут.\n"
+        "Обратитесь к нам в службу поддержки на Яндекс Маркете.\n"
+        "Оформим подписку внутри чата, выдадим инструкцию, гайд и аккаунт.\n\n"
+        "⏰ Ждём вашего обращения с 10:00 по 23:00.\n\n"
         "Спасибо за покупку! 🙏"
     )
 
@@ -121,6 +122,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("📋 Все заказы", callback_data="orders_all")],
         [InlineKeyboardButton("🔄 Проверить заказ по ID", callback_data="order_check")],
         [InlineKeyboardButton("📦 Склад аккаунтов", callback_data="stock_info")],
+        [InlineKeyboardButton("➕ Добавить аккаунты", callback_data="add_accounts")],
         [InlineKeyboardButton("ℹ️ Статус магазина", callback_data="shop_info")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -182,7 +184,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("order_confirm_"):
         order_id = int(data.replace("order_confirm_", ""))
         await confirm_order(query, order_id)
+    elif data == "add_accounts":
+        await start_add_accounts(query, context)
     elif data == "back_menu":
+        # Сбрасываем режим добавления аккаунтов при возврате в меню
+        context.user_data.pop("awaiting_accounts", None)
         await query.edit_message_text(
             "📌 *Главное меню*\n\nВыберите действие:",
             reply_markup=main_menu_keyboard(),
@@ -648,6 +654,155 @@ async def show_stock_info(query):
         await query.edit_message_text(f"❌ Ошибка чтения склада: {e}")
 
 
+# ─── Добавление аккаунтов через бота ─────────────────────────────────
+
+async def start_add_accounts(query, context):
+    """Начать процесс добавления аккаунтов — показать инструкцию."""
+    context.user_data["awaiting_accounts"] = True
+    await query.edit_message_text(
+        "➕ *Добавление аккаунтов на склад*\n\n"
+        "Отправьте аккаунты в формате (каждый с новой строки):\n\n"
+        "`логин ; пароль ; 2fa`\n\n"
+        "Примеры:\n"
+        "`user1@gmail.com ; Pass123!`\n"
+        "`user2@gmail.com ; Pass456! ; BACKUP-CODE`\n"
+        "`user3@mail.ru ; Qwerty1 ;`\n\n"
+        "• Разделитель — точка с запятой `;`\n"
+        "• 2FA — необязательно, можно не указывать\n"
+        "• Можно добавить сразу несколько строк",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
+        ]),
+    )
+
+
+async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /add — быстрое добавление аккаунтов в одном сообщении."""
+    text = update.message.text
+    # Убираем саму команду /add из текста
+    lines_text = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
+
+    if not lines_text.strip():
+        # Если текста нет — включаем режим ожидания
+        context.user_data["awaiting_accounts"] = True
+        await update.message.reply_text(
+            "➕ *Добавление аккаунтов*\n\n"
+            "Отправьте аккаунты в формате:\n"
+            "`логин ; пароль ; 2fa`\n\n"
+            "Каждый аккаунт — с новой строки.\n"
+            "2FA необязателен.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
+            ]),
+        )
+        return
+
+    # Если текст есть — сразу обрабатываем
+    result = _parse_and_add_accounts(lines_text)
+    await update.message.reply_text(
+        result,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
+            [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+        ]),
+    )
+
+
+def _parse_and_add_accounts(text):
+    """
+    Парсинг строк в формате `логин ; пароль ; 2fa` и добавление на склад.
+    Возвращает текстовый отчёт.
+    """
+    lines = text.strip().split("\n")
+    added = []
+    errors = []
+
+    data = load_accounts()
+
+    for i, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split(";")]
+
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            errors.append(f"Строка {i}: `{line}` — нужен логин и пароль")
+            continue
+
+        login = parts[0]
+        password = parts[1]
+        twofa = parts[2].strip() if len(parts) > 2 else ""
+
+        # Проверка дубликатов
+        duplicate = any(
+            acc["login"] == login and not acc.get("used", False)
+            for acc in data["accounts"]
+        )
+        if duplicate:
+            errors.append(f"Строка {i}: `{login}` — уже на складе")
+            continue
+
+        account = {
+            "product": "",
+            "sku": "",
+            "login": login,
+            "password": password,
+            "2fa": twofa,
+            "used": False,
+        }
+        data["accounts"].append(account)
+        added.append(login)
+
+    save_accounts(data)
+
+    # Формируем отчёт
+    free = sum(1 for a in data["accounts"] if not a.get("used", False))
+    report = ""
+
+    if added:
+        report += f"✅ *Добавлено: {len(added)}*\n"
+        for login in added:
+            report += f"  • `{login}`\n"
+        report += "\n"
+
+    if errors:
+        report += f"⚠️ *Ошибки: {len(errors)}*\n"
+        for err in errors:
+            report += f"  • {err}\n"
+        report += "\n"
+
+    report += f"📦 Всего свободных на складе: *{free}*"
+    return report
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик текстовых сообщений.
+    Если включён режим добавления аккаунтов — парсим текст.
+    """
+    if not context.user_data.get("awaiting_accounts"):
+        return  # Не в режиме добавления — игнорируем
+
+    context.user_data["awaiting_accounts"] = False
+
+    text = update.message.text
+    result = _parse_and_add_accounts(text)
+
+    await update.message.reply_text(
+        result,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
+            [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
+            [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+        ]),
+    )
+
+
 # ─── Фоновая проверка новых заказов (АВТОВЫДАЧА) ─────────────────────
 
 async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
@@ -759,12 +914,19 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("order", order_command))
+    app.add_handler(CommandHandler("add", add_accounts_command))
 
     # Кнопки
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Фоновая проверка новых заказов — каждые 30 секунд
-    app.job_queue.run_repeating(poll_new_orders, interval=30, first=5)
+    # Текстовые сообщения (для добавления аккаунтов)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_text_message,
+    ))
+
+    # Фоновая проверка новых заказов — каждые 60 секунд
+    app.job_queue.run_repeating(poll_new_orders, interval=60, first=5)
 
     print("✅ Бот запущен! Polling заказов каждые 30 сек.")
     print(f"📢 Уведомления в группу: {TELEGRAM_GROUP_ID}")
