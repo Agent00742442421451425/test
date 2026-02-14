@@ -1456,7 +1456,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                             parse_mode="Markdown",
                         )
                         logger.info(f"✅ Уведомление о новом заказе {oid} отправлено в группу")
-                        except Exception as e:
+                    except Exception as e:
                         logger.error(f"Ошибка отправки уведомления о новом заказе в группу: {e}")
 
                 # ═══════ ПОПЫТКА АВТОВЫДАЧИ ═══════
