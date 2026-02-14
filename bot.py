@@ -954,15 +954,15 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not lines_text.strip():
         # Если текста нет — включаем режим ожидания
-            context.user_data["awaiting_accounts"] = True
-            await update.message.reply_text(
+        context.user_data["awaiting_accounts"] = True
+        await update.message.reply_text(
             "➕ *Добавление аккаунтов*\n\n"
-                "Отправьте аккаунты в формате:\n"
+            "Отправьте аккаунты в формате:\n"
             "`логин ; пароль ; 2fa`\n\n"
-                "Каждый аккаунт — с новой строки.\n"
-                "2FA необязателен.",
+            "Каждый аккаунт — с новой строки.\n"
+            "2FA необязателен.",
             parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
+            reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
             ]),
         )
