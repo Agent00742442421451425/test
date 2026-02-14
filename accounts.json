@@ -94,7 +94,7 @@
       "login": "test_vpn2@testmail.com",
       "password": "VpnPro@Fast88",
       "2fa": "VPN-BACKUP-999",
-      "used": false
+      "used": true
     }
   ]
 }
