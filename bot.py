@@ -340,24 +340,28 @@ async def show_orders(query, status=None):
             )
             return
 
-        text = f"📦 *Заказы* (найдено: {total})\n\n"
+        text = f"📦 *Список заказов:*\n\nНайдено: {total}"
         keyboard = []
 
-        for order in orders[:10]:
+        for order in orders[:20]:  # Увеличиваем до 20 заказов
             oid = order["id"]
             order_status = order.get("status", "?")
             substatus = order.get("substatus", "")
             total_price = order.get("buyerTotal", 0)
-            date = order.get("creationDate", "")
-
-            text += (
-                f"• `{oid}` — {total_price}₽\n"
-                f"  Статус: {order_status}/{substatus}\n"
-                f"  Дата: {date}\n\n"
-            )
+            
+            # Формируем текст кнопки с краткой информацией
+            status_emoji = {
+                "PROCESSING": "🔄",
+                "DELIVERY": "🚚",
+                "DELIVERED": "✅",
+                "CANCELLED": "❌",
+            }.get(order_status, "📦")
+            
+            button_text = f"{status_emoji} Заказ {oid} — {total_price}₽"
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📋 Заказ {oid}", callback_data=f"order_detail_{oid}"
+                    button_text,
+                    callback_data=f"order_detail_{oid}"
                 )
             ])
 
