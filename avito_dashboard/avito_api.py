@@ -58,6 +58,9 @@ class AvitoAPIClient:
         """Выполнить запрос к API."""
         token = self._get_token()
         url = f"{AVITO_API_BASE}{path}"
+        headers = {"Authorization": f"Bearer {token}"}
+        if json_body:
+            headers["Content-Type"] = "application/json"
 
         with httpx.Client() as client:
             resp = client.request(
@@ -65,7 +68,7 @@ class AvitoAPIClient:
                 url,
                 params=params,
                 json=json_body,
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
             )
 
         logger.info("Avito API %s %s: %s", method, path, resp.status_code)
@@ -87,53 +90,79 @@ class AvitoAPIClient:
                 continue
         return 0
 
-    def get_items(self, offset: int = 0, limit: int = 50) -> dict:
-        """Список объявлений пользователя."""
+    def get_autoload_last_report(self) -> dict:
+        """Последний отчёт автозагрузки — список объявлений (ads)."""
         uid = self.get_user_id()
-        last_error = None
+        return self._request(
+            "GET",
+            f"/autoload/v1/accounts/{uid}/reports/last_report/",
+        )
+
+    def get_items(self, offset: int = 0, limit: int = 50) -> dict:
+        """Список объявлений: из автозагрузки (last_report) или core API."""
+        uid = self.get_user_id()
+        # Сначала пробуем автозагрузку — отчёт содержит ads с avito_id
+        try:
+            report = self.get_autoload_last_report()
+            ads = report.get("ads", [])
+            items = []
+            for ad in ads[:limit]:
+                avito_id = ad.get("avito_id")
+                if avito_id:
+                    items.append({
+                        "id": int(avito_id) if str(avito_id).isdigit() else avito_id,
+                        "avito_id": avito_id,
+                        "ad_id": ad.get("ad_id"),
+                        "url": ad.get("url"),
+                        "title": ad.get("url", "").split("/")[-1] if ad.get("url") else "",
+                        "statuses": ad.get("statuses"),
+                    })
+            if items:
+                return {"result": {"items": items}, "resources": items}
+        except AvitoAPIError as e:
+            logger.debug("Autoload last_report: %s", e)
+
+        # Fallback: core API (если есть эндпоинт списка)
         for path, params in [
             (f"/core/v1/accounts/{uid}/items/", {"offset": offset, "limit": limit}),
             (f"/core/v1/accounts/{uid}/items/", {"offset": offset, "per_page": limit}),
             ("/core/v1/items/", {"offset": offset, "limit": limit}),
-            ("/core/v1/items/", {"offset": offset, "per_page": limit}),
-            ("/autoload/v1/items/", {"offset": offset, "limit": limit}),
         ]:
             try:
                 return self._request("GET", path, params=params)
-            except AvitoAPIError as e:
-                last_error = e
+            except AvitoAPIError:
                 continue
-        # Если API объявлений недоступен (другой тариф) — возвращаем пустой список
-        logger.warning("Items API недоступен: %s. Возвращаем пустой список.", last_error)
+        logger.warning("Не удалось получить объявления. Проверьте: автозагрузка или тариф API.")
         return {"result": {"items": []}, "resources": []}
 
     def get_item(self, item_id: int) -> dict:
         """Детали объявления."""
-        return self._request("GET", f"/core/v1/items/{item_id}")
+        uid = self.get_user_id()
+        return self._request("GET", f"/core/v1/accounts/{uid}/items/{item_id}/")
 
     def get_items_stats(
         self,
         user_id: int,
-        date_from: date,
-        date_to: date,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
         item_ids: Optional[list] = None,
     ) -> dict:
-        """Статистика по объявлениям за период."""
-        params = {
-            "dateFrom": date_from.isoformat(),
-            "dateTo": date_to.isoformat(),
-        }
-        if item_ids:
-            params["itemIds"] = ",".join(str(i) for i in item_ids)
+        """Статистика по объявлениям (POST /core/v1/accounts/{uid}/stats/items)."""
+        if not item_ids:
+            return {"result": {"items": []}, "items": [], "stats": {}}
+
+        body = {"item_ids": [int(i) for i in item_ids[:100]]}
         try:
-            return self._request(
-                "GET",
-                f"/stats/v1/accounts/{user_id}/items",
-                params=params,
+            data = self._request(
+                "POST",
+                f"/core/v1/accounts/{user_id}/stats/items",
+                json_body=body,
             )
+            # Ответ: {"stats": {item_id: {item_views, contact_views}} или array
+            return data
         except AvitoAPIError as e:
             logger.warning("Stats items API: %s", e)
-            return {"result": {"items": []}, "items": []}
+            return {"result": {"items": []}, "items": [], "stats": {}}
 
     def get_operation_stats(
         self,

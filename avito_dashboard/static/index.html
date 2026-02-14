@@ -150,6 +150,9 @@
   <div class="container">
     <h1>Avito Dashboard</h1>
     <p class="subtitle">Статистика объявлений, расчёт прибыли и чек-листы</p>
+    <p class="subtitle" style="font-size: 0.85rem; color: var(--warning);">
+      Если объявления не подтягиваются — укажите ID вручную (из URL avito.ru: <code>item_123456</code> → 123456). Нужен тариф «Расширенная статистика».
+    </p>
 
     <div class="grid">
       <div class="card">
@@ -162,12 +165,16 @@
       </div>
 
       <div class="card">
-        <h2>Период для статистики</h2>
+        <h2>Период и объявления</h2>
         <div class="date-range">
           <input type="date" id="dateFrom">
           <input type="date" id="dateTo">
           <button class="btn btn-primary" id="loadStats">Загрузить статистику</button>
         </div>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">
+          ID объявлений вручную (если не подтягиваются): скопируйте из URL Авито, например <code>123456789</code>, через запятую
+        </p>
+        <input type="text" id="itemIds" placeholder="123456789, 987654321" style="width: 100%; margin-top: 0.5rem; padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--surface2); background: var(--bg); color: var(--text); font-family: inherit;">
       </div>
 
       <div class="card" id="profitCard" style="display:none">
@@ -230,15 +237,25 @@
       btn.textContent = 'Загрузка...';
       const dateFrom = document.getElementById('dateFrom').value;
       const dateTo = document.getElementById('dateTo').value;
+      const itemIdsRaw = document.getElementById('itemIds').value;
+      const parseId = s => {
+        s = s.trim();
+        const m = s.match(/(\d{6,})/);
+        return m ? parseInt(m[1], 10) : (parseInt(s, 10) || NaN);
+      };
+      const itemIds = itemIdsRaw ? itemIdsRaw.split(/[,\s]+/).map(parseId).filter(n => !isNaN(n)) : null;
       try {
         const r = await fetch('/api/stats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+          body: JSON.stringify({ date_from: dateFrom, date_to: dateTo, item_ids: itemIds }),
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || 'Ошибка');
 
+        if (d.message) {
+          alert(d.message);
+        }
         const { profit, checklist } = d;
         document.getElementById('profitCard').style.display = 'block';
         document.getElementById('profitVal').textContent = profit.estimated_profit.toLocaleString('ru');

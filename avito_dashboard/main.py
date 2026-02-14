@@ -53,6 +53,7 @@ def get_avito_client() -> AvitoAPIClient:
 class DateRange(BaseModel):
     date_from: date
     date_to: date
+    item_ids: Optional[list] = None  # Ручной ввод ID объявлений (если API не вернул)
 
 
 def match_item_to_price(item: dict, price_list: list[dict]) -> tuple[float, float]:
@@ -71,7 +72,7 @@ def match_item_to_price(item: dict, price_list: list[dict]) -> tuple[float, floa
     return 0, price  # если не нашли — себестоимость 0, выручка = цена
 
 
-def calc_profit(items: list[dict], stats: dict, price_list: list[dict]) -> dict:
+def calc_profit(items: list, stats: dict, price_list: list) -> dict:
     """Оценка прибыли по статистике и прайсу."""
     result = {
         "total_views": 0,
@@ -82,26 +83,39 @@ def calc_profit(items: list[dict], stats: dict, price_list: list[dict]) -> dict:
         "items": [],
     }
 
-    items_by_id = {str(it.get("id")): it for it in items if it.get("id")}
-    # Разные форматы ответа API: result.items, result.result.items, items
-    stat_items = (
-        stats.get("result", {}) or {}
-    )
-    if isinstance(stat_items, dict):
-        stat_items = stat_items.get("items", stat_items.get("stats", []))
-    if not stat_items:
-        stat_items = stats.get("items", stats.get("stats", []))
+    items_by_id = {str(it.get("id", it.get("avito_id"))): it for it in items if it.get("id") or it.get("avito_id")}
 
-    # Если нет постатейной статистики — создаём нулевую для каждого объявления
+    # Разбор stats: core API возвращает {"stats": {item_id: {item_views, contact_views}}} или array
+    stats_data = stats.get("stats", stats.get("result", {}))
+    stat_items = []
+    if isinstance(stats_data, dict):
+        for iid, s in stats_data.items():
+            if isinstance(s, dict):
+                stat_items.append({
+                    "itemId": iid,
+                    "id": iid,
+                    "item_views": s.get("item_views", s.get("uniqViews", s.get("views", 0))),
+                    "contact_views": s.get("contact_views", s.get("uniqContacts", s.get("contacts", 0))),
+                })
+    elif isinstance(stats_data, list):
+        for i, s in enumerate(stats_data):
+            fallback = items[i].get("id", items[i].get("avito_id")) if i < len(items) else ""
+            iid = str(s.get("item_id") or s.get("itemId") or s.get("id") or fallback)
+            stat_items.append({
+                "itemId": iid,
+                "id": iid,
+                "item_views": s.get("item_views", s.get("uniqViews", s.get("views", 0))),
+                "contact_views": s.get("contact_views", s.get("uniqContacts", s.get("contacts", 0))),
+            })
     if not stat_items and items:
-        stat_items = [{"itemId": i["id"], "uniqViews": 0, "uniqContacts": 0} for i in items[:100]]
+        stat_items = [{"itemId": str(i.get("id", i.get("avito_id"))), "item_views": 0, "contact_views": 0} for i in items[:100]]
 
     for si in stat_items:
         iid = str(si.get("itemId", si.get("id", "")))
         item = items_by_id.get(iid, {})
         wholesale, retail = match_item_to_price(item, price_list)
-        views = int(si.get("uniqViews", si.get("views", 0)) or 0)
-        contacts = int(si.get("uniqContacts", si.get("contacts", 0)) or 0)
+        views = int(si.get("item_views") or si.get("uniqViews") or si.get("views") or 0)
+        contacts = int(si.get("contact_views") or si.get("uniqContacts") or si.get("contacts") or 0)
 
         result["total_views"] += views
         result["total_contacts"] += contacts
@@ -116,7 +130,7 @@ def calc_profit(items: list[dict], stats: dict, price_list: list[dict]) -> dict:
         result["estimated_profit"] += profit
         result["items"].append({
             "item_id": iid,
-            "title": item.get("title", ""),
+            "title": item.get("title", "") or item.get("url", "")[-20:] or f"Объявление {iid}",
             "views": views,
             "contacts": contacts,
             "revenue": round(revenue, 2),
@@ -216,14 +230,40 @@ def api_stats(dates: DateRange):
     try:
         client = get_avito_client()
         uid = client.get_user_id()
-        items_data = client.get_items(limit=500)
-        items = items_data.get("result", {}).get("items", items_data.get("items", []))
-        item_ids = [i["id"] for i in items if i.get("id")]
+        items = []
+        item_ids = list(dates.item_ids or [])
 
-        try:
-            stats = client.get_items_stats(uid, dates.date_from, dates.date_to, item_ids[:50])
-        except AvitoAPIError:
-            stats = client.get_operation_stats(uid, dates.date_from, dates.date_to)
+        if not item_ids:
+            items_data = client.get_items(limit=500)
+            items = items_data.get("result", {}).get("items", items_data.get("items", []))
+            item_ids = [i.get("id", i.get("avito_id")) for i in items if i.get("id") or i.get("avito_id")]
+
+        if not item_ids:
+            return {
+                "stats": {},
+                "profit": {"total_views": 0, "total_contacts": 0, "estimated_profit": 0, "estimated_revenue": 0, "estimated_cost": 0, "items": []},
+                "checklist": [
+                    {"done": False, "text": "Не найдено объявлений. Добавьте ID вручную (см. ниже) или проверьте тариф API (автозагрузка, Расширенная статистика).", "priority": "high"},
+                    {"done": False, "text": "Скопируйте ID объявлений из URL Авито (avito.ru/.../item_12345) и вставьте через запятую.", "priority": "medium"},
+                ],
+                "message": "API Авито не вернул объявления (автозагрузка 404). Укажите ID объявлений вручную в поле ниже — скопируйте из URL avito.ru/.../item_123456. Убедитесь, что у вас подключён тариф «Расширенная статистика» в личном кабинете Авито.",
+            }
+
+        # Core API: POST /core/v1/accounts/{uid}/stats/items
+        stats = client.get_items_stats(uid, item_ids=item_ids[:50])
+
+        if not items:
+            items = [{"id": iid, "avito_id": iid, "title": f"Объявление {iid}"} for iid in item_ids]
+
+        # Дополняем items title и price из get_item (для отображения)
+        for i, it in enumerate(items[:30]):
+            if (not it.get("title") or not it.get("price")) and (it.get("id") or it.get("avito_id")):
+                try:
+                    detail = client.get_item(int(it.get("id", it.get("avito_id"))))
+                    items[i]["title"] = detail.get("title", it.get("title", ""))
+                    items[i]["price"] = detail.get("price", it.get("price", 0))
+                except AvitoAPIError:
+                    pass
 
         profit_data = calc_profit(items, stats, _price_list)
         checklist = build_checklist(profit_data, len(_price_list))
@@ -234,7 +274,13 @@ def api_stats(dates: DateRange):
             "checklist": checklist,
         }
     except AvitoAPIError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        msg = str(e)
+        if "404" in msg or "no Route matched" in msg:
+            raise HTTPException(
+                status_code=502,
+                detail="Эндпоинт API недоступен. Проверьте: 1) Подключён ли тариф «Расширенная статистика» в ЛК Авито; 2) Подтверждён ли доступ к API на developers.avito.ru. Если используете автозагрузку — она может быть отключена. Введите ID объявлений вручную.",
+            )
+        raise HTTPException(status_code=502, detail=msg)
 
 
 @app.post("/api/price/upload")
