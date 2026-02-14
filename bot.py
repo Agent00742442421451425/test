@@ -1440,21 +1440,21 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         "👨‍💼 Ручная обработка (менеджер)",
                         callback_data=f"manual_process_{oid}",
                     )],
-                        [InlineKeyboardButton(
-                            "📋 Детали заказа",
-                            callback_data=f"order_detail_{oid}",
-                        )],
-                    ])
+                    [InlineKeyboardButton(
+                        "📋 Детали заказа",
+                        callback_data=f"order_detail_{oid}",
+                    )],
+                ])
 
                 # Отправляем уведомление о новом заказе в группу
-                    if TELEGRAM_GROUP_ID:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=TELEGRAM_GROUP_ID,
+                if TELEGRAM_GROUP_ID:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_GROUP_ID,
                             text=new_order_text,
                             reply_markup=detail_kb,
                             parse_mode="Markdown",
-                            )
+                        )
                         logger.info(f"✅ Уведомление о новом заказе {oid} отправлено в группу")
                         except Exception as e:
                         logger.error(f"Ошибка отправки уведомления о новом заказе в группу: {e}")
