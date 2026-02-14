@@ -264,17 +264,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
 
     if not is_admin(update):
-            await query.answer("⛔ Доступ запрещён", show_alert=True)
+        await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
 
-        await query.answer()
+    await query.answer()
 
     data = query.data
 
     if data == "orders_new":
-        await show_orders(query, status="PROCESSING")
+        await show_orders(query, status="PROCESSING", page=1)
     elif data == "orders_all":
-        await show_orders(query, status=None)
+        await show_orders(query, status=None, page=1)
+    elif data.startswith("orders_all_page_"):
+        page = int(data.replace("orders_all_page_", ""))
+        await show_orders(query, status=None, page=page)
+    elif data.startswith("orders_processing_page_"):
+        page = int(data.replace("orders_processing_page_", ""))
+        await show_orders(query, status="PROCESSING", page=page)
     elif data == "orders_history":
         await show_orders_history(query)
     elif data.startswith("orders_history_page_"):
@@ -319,14 +325,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Просмотр заказов ───────────────────────────────────────────────
 
-async def show_orders(query, status=None):
-    """Показать список заказов."""
+async def show_orders(query, status=None, page=1):
+    """Показать список заказов с пагинацией (10 заказов на странице)."""
     try:
         with YandexMarketAPI() as api:
-            data = api.get_orders(status=status)
+            data = api.get_orders(status=status, page=page, page_size=10)
 
         orders = data.get("orders", [])
         total = data.get("pager", {}).get("total", 0)
+        current_page = data.get("pager", {}).get("currentPage", page)
+        total_pages = data.get("pager", {}).get("totalPages", 1)
 
         if not orders:
             status_text = f" (статус: {status})" if status else ""
@@ -340,13 +348,14 @@ async def show_orders(query, status=None):
             )
             return
 
-        text = f"📦 *Список заказов:*\n\nНайдено: {total}"
+        # Минимальный заголовок без деталей
+        text = f"📦 *Список заказов:*"
         keyboard = []
 
-        for order in orders[:20]:  # Увеличиваем до 20 заказов
+        # Только inline кнопки с заказами
+        for order in orders:
             oid = order["id"]
             order_status = order.get("status", "?")
-            substatus = order.get("substatus", "")
             total_price = order.get("buyerTotal", 0)
             
             # Формируем текст кнопки с краткой информацией
@@ -365,7 +374,31 @@ async def show_orders(query, status=None):
                 )
             ])
 
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")])
+        # Кнопки навигации
+        nav_buttons = []
+        if current_page > 1:
+            # Определяем callback_data для навигации
+            if status:
+                nav_prev = f"orders_{status.lower()}_page_{current_page - 1}"
+            else:
+                nav_prev = f"orders_all_page_{current_page - 1}"
+            nav_buttons.append(
+                InlineKeyboardButton("⬅️ Назад", callback_data=nav_prev)
+            )
+        
+        if current_page < total_pages:
+            if status:
+                nav_next = f"orders_{status.lower()}_page_{current_page + 1}"
+            else:
+                nav_next = f"orders_all_page_{current_page + 1}"
+            nav_buttons.append(
+                InlineKeyboardButton("➡️ Далее", callback_data=nav_next)
+            )
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+
+        keyboard.append([InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")])
 
         await safe_edit_message(
             query,
