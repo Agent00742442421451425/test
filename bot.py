@@ -729,7 +729,7 @@ async def auto_deliver_account(query, order_id):
         # Уведомление в группу (ЛС админу уже получил ответ через query)
         if TELEGRAM_GROUP_ID:
             try:
-                await context.bot.send_message(
+                await query.get_bot().send_message(
                     chat_id=TELEGRAM_GROUP_ID,
                     text=f"✅ *Аккаунт выдан (кнопка)*\n\n{report}",
                     parse_mode="Markdown",
