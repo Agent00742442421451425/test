@@ -727,15 +727,15 @@ async def auto_deliver_account(query, order_id):
         )
 
         # Уведомление в группу (ЛС админу уже получил ответ через query)
-            if TELEGRAM_GROUP_ID:
-                try:
-                await query.get_bot().send_message(
-                        chat_id=TELEGRAM_GROUP_ID,
+        if TELEGRAM_GROUP_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=TELEGRAM_GROUP_ID,
                     text=f"✅ *Аккаунт выдан (кнопка)*\n\n{report}",
                     parse_mode="Markdown",
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка уведомления в группу: {e}")
+                )
+            except Exception as e:
+                logger.error(f"Ошибка уведомления в группу: {e}")
 
     except Exception as e:
         logger.error(f"Ошибка авто-выдачи для заказа {order_id}: {e}")
@@ -836,7 +836,7 @@ async def force_update_to_delivered(query, order_id):
                     f"📊 Статус: `DELIVERED`\n\n"
                     f"📋 *Детали обработки:*\n{status_report}"
                 )
-    else:
+            else:
                 result_text = (
                     f"⚠️ *Статус не обновлён*\n\n"
                     f"📦 Заказ: `{order_id}`\n"
@@ -886,8 +886,8 @@ async def confirm_order(query, order_id):
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
             ]),
-            )
-        except Exception as e:
+        )
+    except Exception as e:
         logger.error(f"Ошибка подтверждения заказа {order_id}: {e}")
         await safe_edit_message(
             query,
@@ -1080,7 +1080,7 @@ async def show_stock_info(query):
 
 async def start_add_accounts(query, context):
     """Начать процесс добавления аккаунтов — показать инструкцию."""
-        context.user_data["awaiting_accounts"] = True
+    context.user_data["awaiting_accounts"] = True
     await safe_edit_message(
         query,
         "➕ *Добавление аккаунтов на склад*\n\n"
@@ -1111,15 +1111,15 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not lines_text.strip():
         # Если текста нет — включаем режим ожидания
-            context.user_data["awaiting_accounts"] = True
-            await update.message.reply_text(
+        context.user_data["awaiting_accounts"] = True
+        await update.message.reply_text(
             "➕ *Добавление аккаунтов*\n\n"
-                "Отправьте аккаунты в формате:\n"
+            "Отправьте аккаунты в формате:\n"
             "`логин ; пароль ; 2fa`\n\n"
-                "Каждый аккаунт — с новой строки.\n"
-                "2FA необязателен.",
+            "Каждый аккаунт — с новой строки.\n"
+            "2FA необязателен.",
             parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
+            reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
             ]),
         )
