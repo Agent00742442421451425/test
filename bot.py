@@ -844,8 +844,8 @@ async def confirm_order(query, order_id):
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
             ]),
-            )
-        except Exception as e:
+        )
+    except Exception as e:
         logger.error(f"Ошибка подтверждения заказа {order_id}: {e}")
         await safe_edit_message(
             query,
@@ -1013,7 +1013,7 @@ async def show_stock_info(query):
 
 async def start_add_accounts(query, context):
     """Начать процесс добавления аккаунтов — показать инструкцию."""
-        context.user_data["awaiting_accounts"] = True
+    context.user_data["awaiting_accounts"] = True
     await safe_edit_message(
         query,
         "➕ *Добавление аккаунтов на склад*\n\n"
@@ -1293,8 +1293,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Проверяем режим добавления аккаунтов
     if context.user_data.get("awaiting_accounts"):
-    context.user_data["awaiting_accounts"] = False
-    result = _parse_and_add_accounts(text)
+        context.user_data["awaiting_accounts"] = False
+        result = _parse_and_add_accounts(text)
 
     await update.message.reply_text(
         result,
@@ -1364,7 +1364,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     f"🛒 *Товары:*\n{items_text}\n"
                     f"Выберите способ обработки:"
                 )
-                    detail_kb = InlineKeyboardMarkup([
+                detail_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         "🔑 Выдать аккаунт (авто)",
                         callback_data=f"auto_deliver_{oid}",
@@ -1373,23 +1373,23 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         "👨‍💼 Ручная обработка (менеджер)",
                         callback_data=f"manual_process_{oid}",
                     )],
-                        [InlineKeyboardButton(
-                            "📋 Детали заказа",
-                            callback_data=f"order_detail_{oid}",
-                        )],
-                    ])
+                    [InlineKeyboardButton(
+                        "📋 Детали заказа",
+                        callback_data=f"order_detail_{oid}",
+                    )],
+                ])
 
                 # Отправляем уведомление о новом заказе в группу
-                    if TELEGRAM_GROUP_ID:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=TELEGRAM_GROUP_ID,
+                if TELEGRAM_GROUP_ID:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_GROUP_ID,
                             text=new_order_text,
                             reply_markup=detail_kb,
                             parse_mode="Markdown",
-                            )
+                        )
                         logger.info(f"✅ Уведомление о новом заказе {oid} отправлено в группу")
-                        except Exception as e:
+                    except Exception as e:
                         logger.error(f"Ошибка отправки уведомления о новом заказе в группу: {e}")
 
                 # ═══════ ПОПЫТКА АВТОВЫДАЧИ ═══════
