@@ -1113,6 +1113,13 @@ def _parse_and_add_accounts(text):
         }
         data["accounts"].append(account)
         added.append(login)
+        
+        # Синхронизируем остатки после добавления аккаунта (если есть SKU)
+        if account.get("sku"):
+            try:
+                sync_stock_to_yandex(account["sku"])
+            except Exception as e:
+                logger.warning(f"Ошибка синхронизации остатков после добавления аккаунта {login}: {e}")
 
     save_accounts(data)
 
