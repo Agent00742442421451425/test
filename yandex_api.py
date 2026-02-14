@@ -56,43 +56,112 @@ class YandexMarketAPI:
 
     # ─── PUT-запросы: Обновление остатков ────────────────────────────
     
+    def get_offer_mapping_entries(self, sku=None, limit=50):
+        """
+        Получить маппинг товаров (offer mapping entries).
+        GET /campaigns/{campaignId}/offer-mapping-entries
+        
+        Нужно для получения offerMappingEntryId и warehouseId для обновления остатков.
+        """
+        url = f"/campaigns/{self.campaign_id}/offer-mapping-entries"
+        params = {"limit": limit}
+        if sku:
+            params["shopSku"] = sku
+        
+        log.info(f"GET {url}  params={params}")
+        response = self.client.get(url, params=params)
+        self._raise_on_error(response, f"Получение маппинга товаров")
+        return response.json()
+    
     def update_offer_stock(self, sku, count):
         """
         Обновить остаток товара по SKU.
-        PUT /campaigns/{campaignId}/offers/stock
+        Использует правильный endpoint для DBS: /campaigns/{campaignId}/offer-mapping-entries/{offerMappingEntryId}/warehouses/{warehouseId}/stock
         
         Args:
             sku: SKU товара (shopSku)
             count: Количество товара на складе
         """
+        try:
+            # 1. Получаем маппинг товара
+            mapping_data = self.get_offer_mapping_entries(sku=sku)
+            entries = mapping_data.get("result", {}).get("offerMappingEntries", [])
+            
+            if not entries:
+                raise RuntimeError(f"Товар с SKU {sku} не найден в маппинге")
+            
+            entry = entries[0]
+            offer_mapping_entry_id = entry.get("offerMappingEntry", {}).get("id")
+            if not offer_mapping_entry_id:
+                raise RuntimeError(f"Не найден offerMappingEntryId для SKU {sku}")
+            
+            # 2. Получаем warehouse ID (обычно из настроек кампании или первого склада)
+            # Для DBS используем первый доступный склад
+            warehouses = entry.get("warehouses", [])
+            if not warehouses:
+                # Если складов нет в маппинге, пробуем получить из кампании
+                # Для DBS обычно используется склад по умолчанию
+                # Пробуем использовать endpoint без warehouseId или с дефолтным
+                log.warning(f"Склад не найден в маппинге для SKU {sku}, пробуем альтернативный метод")
+                return self._update_stock_alternative(sku, count)
+            
+            warehouse_id = warehouses[0].get("id")
+            if not warehouse_id:
+                log.warning(f"Warehouse ID не найден, пробуем альтернативный метод")
+                return self._update_stock_alternative(sku, count)
+            
+            # 3. Обновляем остаток через правильный endpoint
+            url = f"/campaigns/{self.campaign_id}/offer-mapping-entries/{offer_mapping_entry_id}/warehouses/{warehouse_id}/stock"
+            body = {
+                "count": int(count),
+                "type": "FIT"
+            }
+            
+            log.info(f"PUT {url}  sku={sku}, count={count}, entryId={offer_mapping_entry_id}, warehouseId={warehouse_id}")
+            response = self.client.put(url, json=body)
+            self._raise_on_error(
+                response,
+                f"Обновление остатка товара {sku} → {count}",
+            )
+            return response.json()
+            
+        except Exception as e:
+            # Если основной метод не сработал, пробуем альтернативный
+            log.warning(f"Ошибка обновления остатка через маппинг: {e}, пробуем альтернативный метод")
+            return self._update_stock_alternative(sku, count)
+    
+    def _update_stock_alternative(self, sku, count):
+        """
+        Альтернативный метод обновления остатков через /campaigns/{campaignId}/offers/stock
+        Используется, если основной метод не работает.
+        """
         url = f"/campaigns/{self.campaign_id}/offers/stock"
         body = {
             "skus": [
                 {
-                    "sku": sku,
+                    "sku": str(sku),
                     "items": [
                         {
-                            "count": count,
-                            "type": "FIT",
-                            "updatedAt": None  # Текущее время будет установлено автоматически
+                            "count": int(count),
+                            "type": "FIT"
                         }
                     ]
                 }
             ]
         }
         
-        log.info(f"PUT {url}  sku={sku}, count={count}")
+        log.info(f"PUT {url} (alternative)  sku={sku}, count={count}")
         response = self.client.put(url, json=body)
         self._raise_on_error(
             response,
-            f"Обновление остатка товара {sku} → {count}",
+            f"Обновление остатка товара {sku} → {count} (альтернативный метод)",
         )
         return response.json()
     
     def update_multiple_offers_stock(self, sku_counts):
         """
         Обновить остатки нескольких товаров за один запрос.
-        PUT /campaigns/{campaignId}/offers/stock
+        Использует альтернативный метод через /campaigns/{campaignId}/offers/stock
         
         Args:
             sku_counts: Словарь {sku: count} или список кортежей [(sku, count), ...]
@@ -110,8 +179,7 @@ class YandexMarketAPI:
                 "items": [
                     {
                         "count": int(count),
-                        "type": "FIT",
-                        "updatedAt": None
+                        "type": "FIT"
                     }
                 ]
             })
