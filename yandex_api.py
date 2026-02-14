@@ -229,9 +229,18 @@ class YandexMarketAPI:
         order_data = self.get_order(order_id)
         order = order_data.get("order", {})
         cur_status = order.get("status", "")
-        log.info(f"Заказ {order_id}: перед DELIVERY → {cur_status}")
+        cur_sub = order.get("substatus", "")
+        log.info(f"Заказ {order_id}: перед DELIVERY → {cur_status}/{cur_sub}")
 
-        if cur_status == "PROCESSING":
+        if cur_status == "DELIVERY":
+            results.append(("DELIVERY", "уже в этом статусе"))
+        elif cur_status == "DELIVERED":
+            results.append(("DELIVERY", "пропуск — уже DELIVERED"))
+            results.append(("ИТОГ", "Заказ уже доставлен"))
+            return results
+        elif cur_status == "PROCESSING":
+            # После boxes заказ может быть в PROCESSING (включая READY_TO_SHIP)
+            # Пытаемся перевести в DELIVERY
             try:
                 self.update_order_status(order_id, "DELIVERY")
                 results.append(("DELIVERY", "OK"))
@@ -239,14 +248,9 @@ class YandexMarketAPI:
             except Exception as e:
                 results.append(("DELIVERY", str(e)))
                 # Не прерываем — попробуем DELIVERED на случай если маркет уже сменил
-        elif cur_status == "DELIVERY":
-            results.append(("DELIVERY", "уже в этом статусе"))
-        elif cur_status == "DELIVERED":
-            results.append(("DELIVERY", "пропуск — уже DELIVERED"))
-            results.append(("ИТОГ", "Заказ уже доставлен"))
-            return results
         else:
-            results.append(("DELIVERY", f"невозможно — статус {cur_status}"))
+            # Если статус не PROCESSING и не DELIVERY/DELIVERED, пробуем сразу DELIVERED
+            results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
 
         time.sleep(2)
 
@@ -254,21 +258,39 @@ class YandexMarketAPI:
         order_data = self.get_order(order_id)
         order = order_data.get("order", {})
         cur_status = order.get("status", "")
-        log.info(f"Заказ {order_id}: перед DELIVERED → {cur_status}")
+        cur_sub = order.get("substatus", "")
+        log.info(f"Заказ {order_id}: перед DELIVERED → {cur_status}/{cur_sub}")
 
-        if cur_status == "DELIVERY":
+        if cur_status == "DELIVERED":
+            results.append(("DELIVERED", "уже в этом статусе"))
+        elif cur_status == "DELIVERY":
             try:
                 self.update_order_status(order_id, "DELIVERED")
                 results.append(("DELIVERED", "OK"))
                 log.info(f"Заказ {order_id}: → DELIVERED ✅")
             except Exception as e:
                 results.append(("DELIVERED", str(e)))
-        elif cur_status == "DELIVERED":
-            results.append(("DELIVERED", "уже в этом статусе"))
+        elif cur_status == "PROCESSING":
+            # Если заказ все еще в PROCESSING после boxes, пробуем напрямую DELIVERED
+            # (для цифровых товаров это может работать)
+            try:
+                self.update_order_status(order_id, "DELIVERED")
+                results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
+                log.info(f"Заказ {order_id}: → DELIVERED ✅ (напрямую)")
+            except Exception as e:
+                # Если не получилось напрямую, пробуем через DELIVERY
+                try:
+                    self.update_order_status(order_id, "DELIVERY")
+                    time.sleep(1)
+                    self.update_order_status(order_id, "DELIVERED")
+                    results.append(("DELIVERED", "OK (через DELIVERY)"))
+                    log.info(f"Заказ {order_id}: → DELIVERED ✅ (через DELIVERY)")
+                except Exception as e2:
+                    results.append(("DELIVERED", f"ошибка: {str(e2)}"))
         else:
             results.append((
                 "DELIVERED",
-                f"невозможно — текущий статус {cur_status}, нужен DELIVERY",
+                f"невозможно — текущий статус {cur_status}/{cur_sub}",
             ))
 
         results.append(("ИТОГ", "Обработка завершена"))
