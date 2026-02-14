@@ -170,29 +170,31 @@ def sync_stock_to_yandex(sku=None):
     Иначе обновляет все товары.
     """
     try:
-        stock_counts = get_stock_count_by_sku(sku)
-        
-        if not stock_counts:
-            logger.warning(f"Нет свободных аккаунтов для синхронизации (sku={sku})")
-            return
-        
         with YandexMarketAPI() as api:
             if sku:
                 # Обновляем один товар
-                count = stock_counts
+                count = get_stock_count_by_sku(sku)
                 if count > 0:
                     api.update_offer_stock(sku, count)
                     logger.info(f"✅ Синхронизирован остаток: SKU {sku} → {count}")
+                else:
+                    # Если остаток 0, все равно обновляем, чтобы Яндекс Маркет знал
+                    api.update_offer_stock(sku, 0)
+                    logger.info(f"✅ Синхронизирован остаток: SKU {sku} → 0 (нет на складе)")
             else:
                 # Обновляем все товары
+                stock_counts = get_stock_count_by_sku()
                 if stock_counts:
                     api.update_multiple_offers_stock(stock_counts)
                     logger.info(f"✅ Синхронизированы остатки: {len(stock_counts)} товаров")
                     for sku_item, count in stock_counts.items():
                         logger.info(f"  • SKU {sku_item}: {count}")
+                else:
+                    logger.warning("Нет товаров для синхронизации остатков")
     except Exception as e:
         logger.error(f"Ошибка синхронизации остатков с Яндекс Маркетом: {e}")
-        raise
+        # Не пробрасываем исключение, чтобы не ломать основной процесс
+        logger.warning(f"Синхронизация остатков пропущена из-за ошибки: {e}")
 
 
 def build_support_message():
@@ -262,10 +264,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
 
     if not is_admin(update):
-        await query.answer("⛔ Доступ запрещён", show_alert=True)
+            await query.answer("⛔ Доступ запрещён", show_alert=True)
         return
 
-    await query.answer()
+        await query.answer()
 
     data = query.data
 
@@ -683,15 +685,15 @@ async def auto_deliver_account(query, order_id):
         )
 
         # Уведомление в группу (ЛС админу уже получил ответ через query)
-        if TELEGRAM_GROUP_ID:
-            try:
+            if TELEGRAM_GROUP_ID:
+                try:
                 await query.get_bot().send_message(
-                    chat_id=TELEGRAM_GROUP_ID,
+                        chat_id=TELEGRAM_GROUP_ID,
                     text=f"✅ *Аккаунт выдан (кнопка)*\n\n{report}",
                     parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.error(f"Ошибка уведомления в группу: {e}")
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка уведомления в группу: {e}")
 
     except Exception as e:
         logger.error(f"Ошибка авто-выдачи для заказа {order_id}: {e}")
@@ -792,7 +794,7 @@ async def force_update_to_delivered(query, order_id):
                     f"📊 Статус: `DELIVERED`\n\n"
                     f"📋 *Детали обработки:*\n{status_report}"
                 )
-            else:
+    else:
                 result_text = (
                     f"⚠️ *Статус не обновлён*\n\n"
                     f"📦 Заказ: `{order_id}`\n"
@@ -842,8 +844,8 @@ async def confirm_order(query, order_id):
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
             ]),
-        )
-    except Exception as e:
+            )
+        except Exception as e:
         logger.error(f"Ошибка подтверждения заказа {order_id}: {e}")
         await safe_edit_message(
             query,
@@ -936,9 +938,9 @@ async def sync_stock_handler(query):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
                 ]),
-            )
-            return
-        
+        )
+        return
+
         # Синхронизируем с Яндекс Маркетом
         sync_stock_to_yandex()
         
@@ -951,8 +953,8 @@ async def sync_stock_handler(query):
         
         await safe_edit_message(
             query,
-            text,
-            reply_markup=InlineKeyboardMarkup([
+        text,
+        reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
         )
@@ -1011,7 +1013,7 @@ async def show_stock_info(query):
 
 async def start_add_accounts(query, context):
     """Начать процесс добавления аккаунтов — показать инструкцию."""
-    context.user_data["awaiting_accounts"] = True
+        context.user_data["awaiting_accounts"] = True
     await safe_edit_message(
         query,
         "➕ *Добавление аккаунтов на склад*\n\n"
@@ -1042,15 +1044,15 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not lines_text.strip():
         # Если текста нет — включаем режим ожидания
-        context.user_data["awaiting_accounts"] = True
-        await update.message.reply_text(
+            context.user_data["awaiting_accounts"] = True
+            await update.message.reply_text(
             "➕ *Добавление аккаунтов*\n\n"
-            "Отправьте аккаунты в формате:\n"
+                "Отправьте аккаунты в формате:\n"
             "`логин ; пароль ; 2fa`\n\n"
-            "Каждый аккаунт — с новой строки.\n"
-            "2FA необязателен.",
+                "Каждый аккаунт — с новой строки.\n"
+                "2FA необязателен.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
+                reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
             ]),
         )
@@ -1291,18 +1293,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Проверяем режим добавления аккаунтов
     if context.user_data.get("awaiting_accounts"):
-        context.user_data["awaiting_accounts"] = False
-        result = _parse_and_add_accounts(text)
+    context.user_data["awaiting_accounts"] = False
+    result = _parse_and_add_accounts(text)
 
-        await update.message.reply_text(
-            result,
+    await update.message.reply_text(
+        result,
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
+        reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
-                [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
-                [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
-            ]),
-        )
+            [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
+            [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+        ]),
+    )
 
 
 # ─── Фоновая проверка новых заказов (АВТОВЫДАЧА) ─────────────────────
@@ -1362,7 +1364,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     f"🛒 *Товары:*\n{items_text}\n"
                     f"Выберите способ обработки:"
                 )
-                detail_kb = InlineKeyboardMarkup([
+                    detail_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         "🔑 Выдать аккаунт (авто)",
                         callback_data=f"auto_deliver_{oid}",
@@ -1371,23 +1373,23 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         "👨‍💼 Ручная обработка (менеджер)",
                         callback_data=f"manual_process_{oid}",
                     )],
-                    [InlineKeyboardButton(
-                        "📋 Детали заказа",
-                        callback_data=f"order_detail_{oid}",
-                    )],
-                ])
+                        [InlineKeyboardButton(
+                            "📋 Детали заказа",
+                            callback_data=f"order_detail_{oid}",
+                        )],
+                    ])
 
                 # Отправляем уведомление о новом заказе в группу
-                if TELEGRAM_GROUP_ID:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=TELEGRAM_GROUP_ID,
+                    if TELEGRAM_GROUP_ID:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=TELEGRAM_GROUP_ID,
                             text=new_order_text,
                             reply_markup=detail_kb,
                             parse_mode="Markdown",
-                        )
+                            )
                         logger.info(f"✅ Уведомление о новом заказе {oid} отправлено в группу")
-                    except Exception as e:
+                        except Exception as e:
                         logger.error(f"Ошибка отправки уведомления о новом заказе в группу: {e}")
 
                 # ═══════ ПОПЫТКА АВТОВЫДАЧИ ═══════
