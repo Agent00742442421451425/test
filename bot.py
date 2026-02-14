@@ -1391,6 +1391,13 @@ def main():
         handle_text_message,
     ))
 
+    # Инициализация БД
+    try:
+        db.init_db()
+        print("✅ База данных инициализирована")
+    except Exception as e:
+        print(f"⚠️ Ошибка инициализации БД: {e}")
+
     # Фоновая проверка новых заказов — каждые 60 секунд
     app.job_queue.run_repeating(poll_new_orders, interval=60, first=5)
 
