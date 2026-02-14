@@ -794,7 +794,7 @@ async def force_update_to_delivered(query, order_id):
                     f"📊 Статус: `DELIVERED`\n\n"
                     f"📋 *Детали обработки:*\n{status_report}"
                 )
-            else:
+    else:
                 result_text = (
                     f"⚠️ *Статус не обновлён*\n\n"
                     f"📦 Заказ: `{order_id}`\n"
@@ -942,19 +942,44 @@ async def sync_stock_handler(query):
         return
 
         # Синхронизируем с Яндекс Маркетом
-        sync_stock_to_yandex()
-        
-        # Формируем отчет
-        text = "✅ *Остатки синхронизированы!*\n\n"
-        text += f"📊 Обновлено товаров: {len(stock_counts)}\n\n"
-        text += "*Остатки:*\n"
-        for sku, count in sorted(stock_counts.items()):
-            text += f"  • SKU `{sku}`: {count} шт.\n"
-        
-        await safe_edit_message(
-            query,
+        try:
+            sync_stock_to_yandex()
+            
+            # Формируем отчет
+            text = "✅ *Остатки синхронизированы!*\n\n"
+            text += f"📊 Обновлено товаров: {len(stock_counts)}\n\n"
+            text += "*Остатки:*\n"
+            for sku, count in sorted(stock_counts.items()):
+                text += f"  • SKU `{sku}`: {count} шт.\n"
+            
+            await safe_edit_message(
+                query,
         text,
         reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                ]),
+            )
+        except Exception as sync_error:
+            logger.error(f"Ошибка синхронизации остатков: {sync_error}")
+            error_details = str(sync_error)
+            
+            # Формируем детальное сообщение об ошибке
+            text = f"❌ *Ошибка синхронизации*\n\n"
+            text += f"📊 Найдено товаров на складе: {len(stock_counts)}\n\n"
+            text += f"*Остатки на складе:*\n"
+            for sku, count in sorted(stock_counts.items()):
+                text += f"  • SKU `{sku}`: {count} шт.\n"
+            text += f"\n⚠️ *Ошибка API:*\n`{error_details[:300]}`\n\n"
+            text += f"Проверьте:\n"
+            text += f"• Права API-ключа на обновление остатков\n"
+            text += f"• Правильность SKU товаров\n"
+            text += f"• Наличие товаров в каталоге Яндекс Маркета"
+            
+            await safe_edit_message(
+                query,
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
         )
