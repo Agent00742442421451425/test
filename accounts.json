@@ -95,6 +95,46 @@
       "password": "VpnPro@Fast88",
       "2fa": "VPN-BACKUP-999",
       "used": true
+    },
+    {
+      "product": "",
+      "sku": "",
+      "login": "user2@gmail.com",
+      "password": "Pass123!",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "",
+      "sku": "",
+      "login": "user3@gmail.com",
+      "password": "Pass123!",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "",
+      "sku": "",
+      "login": "user34@gmail.com",
+      "password": "Pass123!",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "",
+      "sku": "",
+      "login": "user5@gmail.com",
+      "password": "Pass123!",
+      "2fa": "",
+      "used": false
+    },
+    {
+      "product": "",
+      "sku": "",
+      "login": "user8@gmail.com",
+      "password": "Pass123!",
+      "2fa": "",
+      "used": false
     }
   ]
 }

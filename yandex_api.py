@@ -54,6 +54,78 @@ class YandexMarketAPI:
         log.error(msg)
         raise RuntimeError(msg)
 
+    # ─── PUT-запросы: Обновление остатков ────────────────────────────
+    
+    def update_offer_stock(self, sku, count):
+        """
+        Обновить остаток товара по SKU.
+        PUT /campaigns/{campaignId}/offers/stock
+        
+        Args:
+            sku: SKU товара (shopSku)
+            count: Количество товара на складе
+        """
+        url = f"/campaigns/{self.campaign_id}/offers/stock"
+        body = {
+            "skus": [
+                {
+                    "sku": sku,
+                    "items": [
+                        {
+                            "count": count,
+                            "type": "FIT",
+                            "updatedAt": None  # Текущее время будет установлено автоматически
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        log.info(f"PUT {url}  sku={sku}, count={count}")
+        response = self.client.put(url, json=body)
+        self._raise_on_error(
+            response,
+            f"Обновление остатка товара {sku} → {count}",
+        )
+        return response.json()
+    
+    def update_multiple_offers_stock(self, sku_counts):
+        """
+        Обновить остатки нескольких товаров за один запрос.
+        PUT /campaigns/{campaignId}/offers/stock
+        
+        Args:
+            sku_counts: Словарь {sku: count} или список кортежей [(sku, count), ...]
+        """
+        url = f"/campaigns/{self.campaign_id}/offers/stock"
+        
+        # Преобразуем входные данные в список словарей
+        if isinstance(sku_counts, dict):
+            sku_counts = list(sku_counts.items())
+        
+        skus = []
+        for sku, count in sku_counts:
+            skus.append({
+                "sku": str(sku),
+                "items": [
+                    {
+                        "count": int(count),
+                        "type": "FIT",
+                        "updatedAt": None
+                    }
+                ]
+            })
+        
+        body = {"skus": skus}
+        
+        log.info(f"PUT {url}  updating {len(skus)} offers")
+        response = self.client.put(url, json=body)
+        self._raise_on_error(
+            response,
+            f"Обновление остатков {len(skus)} товаров",
+        )
+        return response.json()
+
     # ─── GET-запросы: Заказы ─────────────────────────────────────────
 
     def get_orders(self, status=None, page=1, page_size=50, fake=True):

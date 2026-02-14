@@ -95,14 +95,45 @@ def get_available_account(sku=None):
     return None
 
 
-def mark_account_used(login):
-    """Пометить аккаунт как использованный."""
+def get_stock_count_by_sku(sku=None):
+    """
+    Получить количество свободных аккаунтов по SKU.
+    Если sku не указан, возвращает словарь {sku: count} для всех товаров.
+    """
     data = load_accounts()
+    if sku:
+        # Подсчет для конкретного SKU
+        count = sum(1 for acc in data["accounts"] 
+                   if not acc.get("used", False) and acc.get("sku") == sku)
+        return count
+    else:
+        # Подсчет для всех SKU
+        stock = {}
+        for acc in data["accounts"]:
+            if not acc.get("used", False):
+                acc_sku = acc.get("sku", "")
+                if acc_sku:
+                    stock[acc_sku] = stock.get(acc_sku, 0) + 1
+        return stock
+
+
+def mark_account_used(login):
+    """Пометить аккаунт как использованный и синхронизировать остатки."""
+    data = load_accounts()
+    old_sku = None
     for acc in data["accounts"]:
         if acc["login"] == login:
+            old_sku = acc.get("sku")
             acc["used"] = True
             break
     save_accounts(data)
+    
+    # Синхронизируем остатки в Яндекс Маркете
+    if old_sku:
+        try:
+            sync_stock_to_yandex(old_sku)
+        except Exception as e:
+            logger.warning(f"Ошибка синхронизации остатков после использования аккаунта {login}: {e}")
 
 
 def build_account_slip(account, product_name):
@@ -132,6 +163,38 @@ def build_account_slip(account, product_name):
     return text
 
 
+def sync_stock_to_yandex(sku=None):
+    """
+    Синхронизировать остатки товаров со складом аккаунтов в Яндекс Маркет.
+    Если sku указан, обновляет только этот товар.
+    Иначе обновляет все товары.
+    """
+    try:
+        stock_counts = get_stock_count_by_sku(sku)
+        
+        if not stock_counts:
+            logger.warning(f"Нет свободных аккаунтов для синхронизации (sku={sku})")
+            return
+        
+        with YandexMarketAPI() as api:
+            if sku:
+                # Обновляем один товар
+                count = stock_counts
+                if count > 0:
+                    api.update_offer_stock(sku, count)
+                    logger.info(f"✅ Синхронизирован остаток: SKU {sku} → {count}")
+            else:
+                # Обновляем все товары
+                if stock_counts:
+                    api.update_multiple_offers_stock(stock_counts)
+                    logger.info(f"✅ Синхронизированы остатки: {len(stock_counts)} товаров")
+                    for sku_item, count in stock_counts.items():
+                        logger.info(f"  • SKU {sku_item}: {count}")
+    except Exception as e:
+        logger.error(f"Ошибка синхронизации остатков с Яндекс Маркетом: {e}")
+        raise
+
+
 def build_support_message():
     """Сообщение для ручной обработки — отправка клиента в чат поддержки."""
     return (
@@ -153,6 +216,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🔄 Проверить заказ по ID", callback_data="order_check")],
         [InlineKeyboardButton("📦 Склад аккаунтов", callback_data="stock_info")],
         [InlineKeyboardButton("➕ Добавить аккаунты", callback_data="add_accounts")],
+        [InlineKeyboardButton("🔄 Синхронизировать остатки", callback_data="sync_stock")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -222,6 +286,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif data == "stock_info":
         await show_stock_info(query)
+    elif data == "sync_stock":
+        await sync_stock_handler(query)
     elif data.startswith("order_detail_"):
         order_id = int(data.replace("order_detail_", ""))
         await show_order_detail(query, order_id)
@@ -846,6 +912,63 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
+# ─── Синхронизация остатков ──────────────────────────────────────────
+
+async def sync_stock_handler(query):
+    """Синхронизировать остатки товаров с Яндекс Маркетом."""
+    try:
+        await safe_edit_message(
+            query,
+            "🔄 *Синхронизация остатков*\n\n"
+            "⏳ Обновляю остатки товаров в Яндекс Маркете...",
+        )
+        
+        # Получаем остатки со склада
+        stock_counts = get_stock_count_by_sku()
+        
+        if not stock_counts:
+            await safe_edit_message(
+                query,
+                "⚠️ *Нет товаров для синхронизации*\n\n"
+                "На складе нет свободных аккаунтов.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                ]),
+            )
+            return
+        
+        # Синхронизируем с Яндекс Маркетом
+        sync_stock_to_yandex()
+        
+        # Формируем отчет
+        text = "✅ *Остатки синхронизированы!*\n\n"
+        text += f"📊 Обновлено товаров: {len(stock_counts)}\n\n"
+        text += "*Остатки:*\n"
+        for sku, count in sorted(stock_counts.items()):
+            text += f"  • SKU `{sku}`: {count} шт.\n"
+        
+        await safe_edit_message(
+            query,
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+            ]),
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка синхронизации остатков: {e}")
+        await safe_edit_message(
+            query,
+            f"❌ *Ошибка синхронизации*\n\n"
+            f"Ошибка: `{str(e)[:200]}`\n\n"
+            f"Проверьте права API-ключа и настройки товаров.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+            ]),
+        )
 
 
 # ─── Информация о складе аккаунтов ──────────────────────────────────
