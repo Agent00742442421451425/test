@@ -136,27 +136,71 @@ class YandexMarketAPI:
         Используется, если основной метод не работает.
         """
         url = f"/campaigns/{self.campaign_id}/offers/stock"
-        body = {
-            "skus": [
-                {
-                    "sku": str(sku),
-                    "items": [
-                        {
-                            "count": int(count),
-                            "type": "FIT"
-                        }
-                    ]
-                }
-            ]
-        }
         
-        log.info(f"PUT {url} (alternative)  sku={sku}, count={count}")
-        response = self.client.put(url, json=body)
-        self._raise_on_error(
-            response,
-            f"Обновление остатка товара {sku} → {count} (альтернативный метод)",
-        )
-        return response.json()
+        # Пробуем разные форматы запроса
+        formats_to_try = [
+            # Формат 1: с items
+            {
+                "skus": [
+                    {
+                        "sku": str(sku),
+                        "items": [
+                            {
+                                "count": int(count),
+                                "type": "FIT"
+                            }
+                        ]
+                    }
+                ]
+            },
+            # Формат 2: без items, напрямую count
+            {
+                "skus": [
+                    {
+                        "sku": str(sku),
+                        "count": int(count)
+                    }
+                ]
+            },
+            # Формат 3: через offers
+            {
+                "offers": [
+                    {
+                        "shopSku": str(sku),
+                        "available": int(count) > 0,
+                        "count": int(count) if int(count) > 0 else 0
+                    }
+                ]
+            }
+        ]
+        
+        last_error = None
+        for i, body in enumerate(formats_to_try, 1):
+            try:
+                log.info(f"PUT {url} (format {i})  sku={sku}, count={count}, body={body}")
+                response = self.client.put(url, json=body)
+                
+                # Проверяем ответ
+                if response.status_code < 400:
+                    log.info(f"✅ Остаток обновлен успешно (формат {i})")
+                    return response.json()
+                else:
+                    # Логируем ошибку, но пробуем следующий формат
+                    try:
+                        error_body = response.json()
+                        last_error = f"HTTP {response.status_code}: {error_body}"
+                    except:
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                    log.warning(f"Формат {i} не сработал: {last_error}")
+                    continue
+                    
+            except Exception as e:
+                last_error = str(e)
+                log.warning(f"Ошибка при попытке формата {i}: {last_error}")
+                continue
+        
+        # Если все форматы не сработали, пробрасываем ошибку
+        raise RuntimeError(f"Не удалось обновить остаток товара {sku} ни одним из форматов. Последняя ошибка: {last_error}")
     
     def update_multiple_offers_stock(self, sku_counts):
         """
