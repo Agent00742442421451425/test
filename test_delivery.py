@@ -6,10 +6,6 @@ import os
 import time
 import logging
 
-# Устанавливаем DATABASE_URL для тестов, если не установлен
-if not os.getenv("DATABASE_URL"):
-    os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-
 from yandex_api import YandexMarketAPI
 from config import CAMPAIGN_ID
 

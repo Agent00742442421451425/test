@@ -30,8 +30,4 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-# PostgreSQL Database
-# В .env: DATABASE_URL=postgresql://user:password@host:port/database
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL не установлен в .env файле!")
+# Данные хранятся в JSON-файлах (accounts.json, orders.json). PostgreSQL не используется.
