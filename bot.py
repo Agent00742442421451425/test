@@ -83,37 +83,44 @@ def save_accounts(data):
 def get_available_account(sku=None):
     """
     Получить первый свободный аккаунт со склада.
-    Если указан sku — ищет по конкретному товару.
+    Если указан sku — приоритет у аккаунтов с этим SKU, подходят и аккаунты без SKU (универсальные).
     """
     data = load_accounts()
     for acc in data["accounts"]:
         if acc.get("used", False):
             continue
-        if sku and acc.get("sku") != sku:
+        acc_sku = (acc.get("sku") or "").strip()
+        if sku and acc_sku and acc_sku != sku:
             continue
         return acc
     return None
 
 
+# Ключ для аккаунтов без привязки к товару (не отправляется в API Маркета)
+STOCK_KEY_NO_SKU = "(без SKU)"
+
 def get_stock_count_by_sku(sku=None):
     """
     Получить количество свободных аккаунтов по SKU.
     Если sku не указан, возвращает словарь {sku: count} для всех товаров.
+    Аккаунты с пустым sku учитываются как STOCK_KEY_NO_SKU (доступны к выдаче «универсально»).
     """
     data = load_accounts()
     if sku:
-        # Подсчет для конкретного SKU
-        count = sum(1 for acc in data["accounts"] 
-                   if not acc.get("used", False) and acc.get("sku") == sku)
+        # Подсчет для конкретного SKU: по sku или без sku (универсальные подходят под любой заказ)
+        count = sum(
+            1 for acc in data["accounts"]
+            if not acc.get("used", False)
+            and (acc.get("sku") == sku or not (acc.get("sku") or "").strip())
+        )
         return count
     else:
         # Подсчет для всех SKU
         stock = {}
         for acc in data["accounts"]:
             if not acc.get("used", False):
-                acc_sku = acc.get("sku", "")
-                if acc_sku:
-                    stock[acc_sku] = stock.get(acc_sku, 0) + 1
+                acc_sku = (acc.get("sku") or "").strip() or STOCK_KEY_NO_SKU
+                stock[acc_sku] = stock.get(acc_sku, 0) + 1
         return stock
 
 
@@ -182,13 +189,16 @@ def sync_stock_to_yandex(sku=None):
                     api.update_offer_stock(sku, 0)
                     logger.info(f"✅ Синхронизирован остаток: SKU {sku} → 0 (нет на складе)")
             else:
-                # Обновляем все товары
+                # Обновляем все товары (в API только реальные SKU, без «(без SKU)»)
                 stock_counts = get_stock_count_by_sku()
-                if stock_counts:
-                    api.update_multiple_offers_stock(stock_counts)
-                    logger.info(f"✅ Синхронизированы остатки: {len(stock_counts)} товаров")
-                    for sku_item, count in stock_counts.items():
+                stock_for_api = {k: v for k, v in stock_counts.items() if k != STOCK_KEY_NO_SKU}
+                if stock_for_api:
+                    api.update_multiple_offers_stock(stock_for_api)
+                    logger.info(f"✅ Синхронизированы остатки: {len(stock_for_api)} товаров")
+                    for sku_item, count in stock_for_api.items():
                         logger.info(f"  • SKU {sku_item}: {count}")
+                elif stock_counts:
+                    logger.warning("На складе только аккаунты без SKU — в Маркет отправлять нечего")
                 else:
                     logger.warning("Нет товаров для синхронизации остатков")
     except Exception as e:
@@ -581,6 +591,15 @@ async def show_order_detail(query, order_id):
                     InlineKeyboardButton(
                         "🔄 Обновить статус до DELIVERED",
                         callback_data=f"force_delivered_{order_id}",
+                    )
+                ])
+
+        # Заказ уже передан в доставку — даём возможность перевести в DELIVERED
+        if status == "DELIVERY":
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Перевести в DELIVERED (доставлен)",
+                    callback_data=f"force_delivered_{order_id}",
                 )
             ])
 
@@ -971,33 +990,47 @@ async def sync_stock_handler(query):
         
         # Получаем остатки со склада
         stock_counts = get_stock_count_by_sku()
-        
-        if not stock_counts:
+        stock_for_api = {k: v for k, v in (stock_counts or {}).items() if k != STOCK_KEY_NO_SKU}
+
+        if not stock_for_api:
+            # Нет остатков с привязкой к товару — сообщаем, есть ли свободные без SKU
+            no_sku_count = (stock_counts or {}).get(STOCK_KEY_NO_SKU, 0)
+            if no_sku_count:
+                msg = (
+                    "⚠️ *Нет товаров для синхронизации в Маркет*\n\n"
+                    f"Свободных аккаунтов *без привязки к товару (SKU)*: {no_sku_count}.\n"
+                    "Их можно выдавать вручную; для синхронизации остатков укажите SKU в файле `accounts.json` или добавляйте аккаунты через бота с привязкой к товару."
+                )
+            else:
+                msg = (
+                    "⚠️ *Нет товаров для синхронизации*\n\n"
+                    "На складе нет свободных аккаунтов."
+                )
             await safe_edit_message(
                 query,
-                "⚠️ *Нет товаров для синхронизации*\n\n"
-                "На складе нет свободных аккаунтов.",
+                msg,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
                 ]),
-        )
-        return
+            )
+            return
 
         # Синхронизируем с Яндекс Маркетом
         try:
             sync_stock_to_yandex()
-            
-            # Формируем отчет
+
+            # Формируем отчет (показываем и «без SKU» для ясности)
             text = "✅ *Остатки синхронизированы!*\n\n"
-            text += f"📊 Обновлено товаров: {len(stock_counts)}\n\n"
+            text += f"📊 Обновлено товаров в Маркете: {len(stock_for_api)}\n\n"
             text += "*Остатки:*\n"
             for sku, count in sorted(stock_counts.items()):
-                text += f"  • SKU `{sku}`: {count} шт.\n"
-            
+                label = "без привязки" if sku == STOCK_KEY_NO_SKU else f"`{sku}`"
+                text += f"  • {label}: {count} шт.\n"
+
             await safe_edit_message(
                 query,
-        text,
-        reply_markup=InlineKeyboardMarkup([
+                text,
+                reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
                 ]),
             )
@@ -1007,24 +1040,25 @@ async def sync_stock_handler(query):
             
             # Формируем детальное сообщение об ошибке
             text = f"❌ *Ошибка синхронизации*\n\n"
-            text += f"📊 Найдено товаров на складе: {len(stock_counts)}\n\n"
+            text += f"📊 На складе: {len(stock_counts)} позиций\n\n"
             text += f"*Остатки на складе:*\n"
             for sku, count in sorted(stock_counts.items()):
-                text += f"  • SKU `{sku}`: {count} шт.\n"
+                label = "без привязки" if sku == STOCK_KEY_NO_SKU else f"SKU `{sku}`"
+                text += f"  • {label}: {count} шт.\n"
             text += f"\n⚠️ *Ошибка API:*\n`{error_details[:300]}`\n\n"
-            text += f"Проверьте:\n"
-            text += f"• Права API-ключа на обновление остатков\n"
-            text += f"• Правильность SKU товаров\n"
-            text += f"• Наличие товаров в каталоге Яндекс Маркета"
-            
+            text += "Проверьте:\n"
+            text += "• Права API-ключа на обновление остатков\n"
+            text += "• Правильность SKU товаров\n"
+            text += "• Наличие товаров в каталоге Яндекс Маркета"
+
             await safe_edit_message(
                 query,
-            text,
-            reply_markup=InlineKeyboardMarkup([
+                text,
+                reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
-            ]),
-        )
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                ]),
+            )
         
     except Exception as e:
         logger.error(f"Ошибка синхронизации остатков: {e}")
@@ -1051,6 +1085,9 @@ async def show_stock_info(query):
         total = len(accounts)
         free = sum(1 for a in accounts if not a.get("used", False))
         used = total - free
+        stock = get_stock_count_by_sku()
+        with_sku = sum(c for k, c in stock.items() if k != STOCK_KEY_NO_SKU)
+        no_sku = stock.get(STOCK_KEY_NO_SKU, 0)
 
         text = (
             f"📦 *Склад аккаунтов*\n\n"
@@ -1058,12 +1095,21 @@ async def show_stock_info(query):
             f"✅ Свободных: {free}\n"
             f"❌ Выдано: {used}\n\n"
         )
+        if free > 0:
+            text += f"📤 *Доступно к выдаче:* {free}"
+            if no_sku and with_sku:
+                text += f" (с привязкой к товару: {with_sku}, без привязки: {no_sku})\n\n"
+            elif no_sku:
+                text += f" (все без привязки к товару — подходят под любой заказ)\n\n"
+            else:
+                text += "\n\n"
 
         if free > 0:
             text += "*Свободные аккаунты:*\n"
             for acc in accounts:
                 if not acc.get("used", False):
-                    text += f"  • `{acc['login']}` — {acc.get('product', '?')}\n"
+                    product = acc.get("product") or acc.get("sku") or "—"
+                    text += f"  • `{acc['login']}` — {product}\n"
 
         await safe_edit_message(
             query,
