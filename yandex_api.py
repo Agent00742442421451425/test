@@ -200,6 +200,7 @@ class YandexMarketAPI:
         order = order_data.get("order", {})
         cur_status = order.get("status", "")
         delivery = order.get("delivery", {})
+        delivery_type = delivery.get("type", "")
         shipments = delivery.get("shipments", [])
         items = order.get("items", [])
 
@@ -211,17 +212,27 @@ class YandexMarketAPI:
                 try:
                     self.set_order_boxes(order_id, shipment_id, items)
                     results.append(("ОТГРУЗКА", "OK"))
-                    log.info(f"Заказ {order_id}: boxes подтверждены ✅")
+                    log.info(f"Заказ {order_id}: boxes подтверждены ✅ (тип доставки: {delivery_type})")
                 except Exception as e:
                     error_str = str(e)
-                    if "already" in error_str.lower() or "400" in error_str:
+                    if "already" in error_str.lower() or "400" in error_str or "already confirmed" in error_str.lower():
                         results.append(("ОТГРУЗКА", "уже подтверждена"))
+                        log.info(f"Заказ {order_id}: boxes уже подтверждены")
                     else:
                         results.append(("ОТГРУЗКА", error_str))
+                        log.error(f"Заказ {order_id}: ошибка подтверждения boxes: {error_str}")
             else:
                 results.append(("ОТГРУЗКА", "нет shipment ID"))
+                log.warning(f"Заказ {order_id}: нет shipment ID в shipments")
         else:
-            results.append(("ОТГРУЗКА", "нет shipments"))
+            # Для DIGITAL товаров shipments могут отсутствовать
+            # В этом случае пробуем сразу перейти к DELIVERY/DELIVERED
+            if delivery_type == "DIGITAL":
+                results.append(("ОТГРУЗКА", "пропуск — DIGITAL товар, нет shipments"))
+                log.info(f"Заказ {order_id}: DIGITAL товар без shipments, пропускаем boxes")
+            else:
+                results.append(("ОТГРУЗКА", "нет shipments"))
+                log.warning(f"Заказ {order_id}: нет shipments (тип доставки: {delivery_type})")
 
         time.sleep(5)  # Увеличиваем время ожидания после boxes
 
