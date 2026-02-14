@@ -208,6 +208,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("order_confirm_"):
         order_id = int(data.replace("order_confirm_", ""))
         await confirm_order(query, order_id)
+    elif data.startswith("force_delivered_"):
+        order_id = int(data.replace("force_delivered_", ""))
+        await force_update_to_delivered(query, order_id)
     elif data == "add_accounts":
         await start_add_accounts(query, context)
     elif data == "back_menu":
@@ -311,6 +314,7 @@ async def show_order_detail(query, order_id):
 
         keyboard = []
         status = order.get("status", "")
+        substatus = order.get("substatus", "")
 
         if status == "PROCESSING":
             # Кнопки обработки заказа
@@ -332,6 +336,14 @@ async def show_order_detail(query, order_id):
                     callback_data=f"order_confirm_{order_id}",
                 )
             ])
+            # Кнопка для принудительного обновления статуса (если заказ уже выдан)
+            if substatus == "READY_TO_SHIP":
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "🔄 Обновить статус до DELIVERED",
+                        callback_data=f"force_delivered_{order_id}",
+                    )
+                ])
 
         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")])
 
@@ -516,6 +528,80 @@ async def manual_process_order(query, order_id, context):
             f"❌ Ошибка: {e}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+            ]),
+        )
+
+
+# ─── Принудительное обновление статуса до DELIVERED ───────────────────
+
+async def force_update_to_delivered(query, order_id):
+    """Принудительно обновить статус заказа до DELIVERED."""
+    try:
+        await query.edit_message_text(
+            f"🔄 *Обновление статуса заказа*\n\n"
+            f"📦 Заказ: `{order_id}`\n"
+            f"⏳ Пытаюсь перевести в DELIVERED...",
+            parse_mode="Markdown",
+        )
+
+        with YandexMarketAPI() as api:
+            # Пытаемся перевести заказ в DELIVERED
+            status_results = api.deliver_digital_order(order_id)
+            status_report = "\n".join(f"  • {s}: {r}" for s, r in status_results)
+
+            # Проверяем текущий статус
+            order_data = api.get_order(order_id)
+            order = order_data.get("order", {})
+            final_status = order.get("status", "")
+            final_sub = order.get("substatus", "")
+
+            # Проверяем успешность
+            delivered_ok = any(
+                step == "DELIVERED" and result == "OK"
+                for step, result in status_results
+            )
+            already_delivered = any(
+                step == "DELIVERED" and "уже" in result
+                for step, result in status_results
+            )
+
+            if final_status == "DELIVERED" or delivered_ok or already_delivered:
+                result_text = (
+                    f"✅ *Статус обновлён!*\n\n"
+                    f"📦 Заказ: `{order_id}`\n"
+                    f"📊 Статус: `DELIVERED`\n\n"
+                    f"📋 *Детали обработки:*\n{status_report}"
+                )
+            else:
+                result_text = (
+                    f"⚠️ *Статус не обновлён*\n\n"
+                    f"📦 Заказ: `{order_id}`\n"
+                    f"📊 Текущий статус: `{final_status}/{final_sub}`\n\n"
+                    f"📋 *Попытки обновления:*\n{status_report}\n\n"
+                    f"Попробуйте ещё раз или обратитесь в поддержку."
+                )
+
+            await query.edit_message_text(
+                result_text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                    [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                ]),
+            )
+
+    except Exception as e:
+        logger.error(f"Ошибка принудительного обновления статуса заказа {order_id}: {e}")
+        await query.edit_message_text(
+            f"❌ *Ошибка обновления статуса*\n\n"
+            f"Ошибка: `{str(e)[:200]}`\n\n"
+            f"Попробуйте ещё раз.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
+                [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
             ]),
         )
 
