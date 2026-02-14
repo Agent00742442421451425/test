@@ -204,7 +204,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await auto_deliver_account(query, order_id)
     elif data.startswith("manual_process_"):
         order_id = int(data.replace("manual_process_", ""))
-        await manual_process_order(query, order_id)
+        await manual_process_order(query, order_id, context)
     elif data.startswith("order_confirm_"):
         order_id = int(data.replace("order_confirm_", ""))
         await confirm_order(query, order_id)
@@ -443,7 +443,7 @@ async def auto_deliver_account(query, order_id):
             )
             return
 
-        await query.edit_message_text(
+            await query.edit_message_text(
             f"✅ *Аккаунт выдан и заказ доставлен!*\n\n{report}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -476,46 +476,39 @@ async def auto_deliver_account(query, order_id):
 
 # ─── Ручная обработка (менеджер) ────────────────────────────────────
 
-async def manual_process_order(query, order_id):
-    """Ручная обработка — отправить клиента в чат поддержки."""
+async def manual_process_order(query, order_id, context):
+    """Ручная обработка — запросить данные аккаунта у менеджера."""
     try:
-        support_msg = build_support_message()
-
-        # Отправляем сообщение покупателю через чат Маркета
+        # Получаем информацию о заказе для отображения
         with YandexMarketAPI() as api:
-            result = api.send_message_to_buyer(order_id, support_msg)
+            order_data = api.get_order(order_id)
+            order = order_data.get("order", {})
+            items = order.get("items", [])
+            product_name = items[0].get("offerName", "Товар") if items else "Товар"
+
+        # Сохраняем order_id в bot_data для обработки следующего сообщения
+        user_id = query.from_user.id
+        if "manual_orders" not in context.bot_data:
+            context.bot_data["manual_orders"] = {}
+        context.bot_data["manual_orders"][user_id] = order_id
 
         await query.edit_message_text(
-            f"👨‍💼 *Ручная обработка*\n\n"
+            f"👨‍💼 *Ручная обработка заказа*\n\n"
             f"📦 Заказ: `{order_id}`\n"
-            f"📨 Покупателю отправлено сообщение в чат Маркета:\n"
-            f"_«Ваш заказ принят и передан менеджеру»_\n\n"
-            f"Откройте чат с покупателем в панели Маркета\n"
-            f"и отправьте данные вручную.",
+            f"🛒 Товар: {product_name}\n\n"
+            f"📝 *Введите данные аккаунта в формате:*\n\n"
+            f"`логин ; пароль ; 2fa`\n\n"
+            f"*Примеры:*\n"
+            f"`user@gmail.com ; Pass123!`\n"
+            f"`user@mail.ru ; Pass456! ; BACKUP-CODE`\n\n"
+            f"• Разделитель — точка с запятой `;`\n"
+            f"• 2FA — необязательно\n"
+            f"• После отправки данные будут переданы клиенту автоматически",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"order_detail_{order_id}")],
             ]),
         )
-
-        # Уведомление в группу
-        if TELEGRAM_GROUP_ID:
-            try:
-                from telegram import Bot
-                bot = Bot(token=TELEGRAM_BOT_TOKEN)
-                await bot.send_message(
-                    chat_id=TELEGRAM_GROUP_ID,
-                    text=(
-                        f"👨‍💼 *Заказ на ручную обработку*\n\n"
-                        f"📦 Заказ: `{order_id}`\n"
-                        f"⚠️ Менеджер, откройте чат с покупателем\n"
-                        f"в панели Яндекс Маркета и отправьте данные."
-                    ),
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.error(f"Ошибка уведомления в группу: {e}")
 
     except Exception as e:
         logger.error(f"Ошибка ручной обработки {order_id}: {e}")
@@ -814,24 +807,137 @@ def _parse_and_add_accounts(text):
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработчик текстовых сообщений (только админ).
-    Если включён режим добавления аккаунтов — парсим текст.
+    Обрабатывает:
+    1. Добавление аккаунтов на склад
+    2. Ввод данных аккаунта для ручной обработки заказа
     """
     if not is_admin(update):
         return  # Не админ — игнорируем
 
-    if not context.user_data.get("awaiting_accounts"):
-        return  # Не в режиме добавления — игнорируем
-
-    context.user_data["awaiting_accounts"] = False
-
+    user_id = update.effective_user.id
     text = update.message.text
-    result = _parse_and_add_accounts(text)
 
-    await update.message.reply_text(
-        result,
-        parse_mode="Markdown",
+    # Проверяем режим ручной обработки заказа
+    manual_orders = context.bot_data.get("manual_orders", {})
+    if user_id in manual_orders:
+        order_id = manual_orders[user_id]
+        del manual_orders[user_id]  # Удаляем из ожидающих
+        
+        # Парсим данные аккаунта
+        parts = [p.strip() for p in text.split(";")]
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            await update.message.reply_text(
+                "❌ *Неверный формат*\n\n"
+                "Используйте формат:\n"
+                "`логин ; пароль ; 2fa`\n\n"
+                "Пример: `user@gmail.com ; Pass123!`",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Отмена", callback_data=f"order_detail_{order_id}")],
+                ]),
+            )
+        return
+
+        login = parts[0]
+        password = parts[1]
+        twofa = parts[2].strip() if len(parts) > 2 else ""
+
+        # Отправляем данные клиенту
+        try:
+            with YandexMarketAPI() as api:
+                # Получаем информацию о заказе
+                order_data = api.get_order(order_id)
+                order = order_data.get("order", {})
+                items = order.get("items", [])
+                product_name = items[0].get("offerName", "Товар") if items else "Товар"
+
+                # Формируем сообщение для клиента
+                account_data = {
+                    "login": login,
+                    "password": password,
+                    "2fa": twofa,
+                }
+                slip = build_account_slip(account_data, product_name)
+
+                # Отправляем клиенту
+                api.send_message_to_buyer(order_id, slip)
+
+                # Обновляем статус заказа до DELIVERED
+                status_results = api.deliver_digital_order(order_id)
+                status_report = "\n".join(f"  • {s}: {r}" for s, r in status_results)
+
+                # Проверяем успешность доставки
+                delivered_ok = any(
+                    step == "DELIVERED" and result == "OK"
+                    for step, result in status_results
+                )
+                already_delivered = any(
+                    step == "DELIVERED" and "уже" in result
+                    for step, result in status_results
+                )
+
+                delivery_status = "✅ DELIVERED" if (delivered_ok or already_delivered) else "⏳ в процессе"
+
+                # Отправляем подтверждение менеджеру
+                success_text = (
+                    f"✅ *Данные отправлены клиенту!*\n\n"
+                    f"📦 Заказ: `{order_id}`\n"
+                    f"🛒 Товар: {product_name}\n"
+                    f"🔑 Логин: `{login}`\n"
+                    f"📨 Сообщение отправлено в чат покупателю\n"
+                    f"{delivery_status}\n\n"
+                    f"📊 Обработка:\n{status_report}"
+                )
+
+                await update.message.reply_text(
+                    success_text,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    ]),
+                )
+
+                # Уведомление в группу
+                if TELEGRAM_GROUP_ID:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_GROUP_ID,
+                            text=(
+                                f"✅ *Ручная обработка завершена*\n\n"
+                                f"📦 Заказ: `{order_id}`\n"
+                                f"🔑 Логин: `{login}`\n"
+                                f"👤 Менеджер: {update.effective_user.first_name}"
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка уведомления в группу: {e}")
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки данных клиенту для заказа {order_id}: {e}")
+            await update.message.reply_text(
+                f"❌ *Ошибка отправки данных*\n\n"
+                f"Ошибка: `{str(e)[:200]}`\n\n"
+                f"Попробуйте ещё раз или используйте автоматическую выдачу.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 Автовыдача", callback_data=f"auto_deliver_{order_id}")],
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                ]),
+            )
+        return
+
+    # Проверяем режим добавления аккаунтов
+    if context.user_data.get("awaiting_accounts"):
+        context.user_data["awaiting_accounts"] = False
+        result = _parse_and_add_accounts(text)
+
+        await update.message.reply_text(
+            result,
+            parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
+                [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
             [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
             [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
         ]),
@@ -878,7 +984,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     f"🛒 *Товары:*\n{items_text}\n"
                     f"Выберите способ обработки:"
                 )
-                detail_kb = InlineKeyboardMarkup([
+                    detail_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         "🔑 Выдать аккаунт (авто)",
                         callback_data=f"auto_deliver_{oid}",
@@ -887,11 +993,11 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         "👨‍💼 Ручная обработка (менеджер)",
                         callback_data=f"manual_process_{oid}",
                     )],
-                    [InlineKeyboardButton(
-                        "📋 Детали заказа",
-                        callback_data=f"order_detail_{oid}",
-                    )],
-                ])
+                        [InlineKeyboardButton(
+                            "📋 Детали заказа",
+                            callback_data=f"order_detail_{oid}",
+                        )],
+                    ])
 
                 # Отправляем уведомление о новом заказе в группу
                 if TELEGRAM_GROUP_ID:
