@@ -1360,18 +1360,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Проверяем режим добавления аккаунтов
     if context.user_data.get("awaiting_accounts"):
-    context.user_data["awaiting_accounts"] = False
-    result = _parse_and_add_accounts(text)
+        context.user_data["awaiting_accounts"] = False
+        result = _parse_and_add_accounts(text)
 
-    await update.message.reply_text(
-        result,
+        await update.message.reply_text(
+            result,
             parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
+            reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
-            [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
-            [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
-        ]),
-    )
+                [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
+                [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+            ]),
+        )
 
 
 # ─── Фоновая проверка новых заказов (АВТОВЫДАЧА) ─────────────────────
@@ -1431,7 +1431,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     f"🛒 *Товары:*\n{items_text}\n"
                     f"Выберите способ обработки:"
                 )
-                    detail_kb = InlineKeyboardMarkup([
+                detail_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         "🔑 Выдать аккаунт (авто)",
                         callback_data=f"auto_deliver_{oid}",
