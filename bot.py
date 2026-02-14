@@ -332,24 +332,27 @@ async def show_orders(query, status=None, page=1):
             data = api.get_orders(status=status, page=page, page_size=10)
 
         orders = data.get("orders", [])
-        total = data.get("pager", {}).get("total", 0)
-        current_page = data.get("pager", {}).get("currentPage", page)
-        total_pages = data.get("pager", {}).get("totalPages", 1)
+        pager = data.get("pager", {})
+        
+        # Вычисляем пагинацию вручную, если API не вернул
+        total = pager.get("total", len(orders))
+        current_page = pager.get("currentPage", page)
+        page_size = 10
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
         if not orders:
             status_text = f" (статус: {status})" if status else ""
             await safe_edit_message(
                 query,
-                f"📭 Заказов{status_text} не найдено.\n\n"
-                f"Всего в системе: {total}",
+                f"📭 Заказов{status_text} не найдено.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                    [InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")]
                 ]),
             )
             return
 
-        # Минимальный заголовок без деталей
-        text = f"📦 *Список заказов:*"
+        # ТОЛЬКО заголовок, БЕЗ деталей
+        text = "📦 *Список заказов:*"
         keyboard = []
 
         # Только inline кнопки с заказами
@@ -374,7 +377,7 @@ async def show_orders(query, status=None, page=1):
                 )
             ])
 
-        # Кнопки навигации
+        # Кнопки навигации - ВСЕГДА показываем если есть больше страниц
         nav_buttons = []
         if current_page > 1:
             # Определяем callback_data для навигации
@@ -386,7 +389,8 @@ async def show_orders(query, status=None, page=1):
                 InlineKeyboardButton("⬅️ Назад", callback_data=nav_prev)
             )
         
-        if current_page < total_pages:
+        if current_page < total_pages or len(orders) == page_size:
+            # Показываем "Далее" если есть еще заказы
             if status:
                 nav_next = f"orders_{status.lower()}_page_{current_page + 1}"
             else:
@@ -404,6 +408,7 @@ async def show_orders(query, status=None, page=1):
             query,
             text,
             reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
         )
 
     except Exception as e:
