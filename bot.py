@@ -153,7 +153,6 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🔄 Проверить заказ по ID", callback_data="order_check")],
         [InlineKeyboardButton("📦 Склад аккаунтов", callback_data="stock_info")],
         [InlineKeyboardButton("➕ Добавить аккаунты", callback_data="add_accounts")],
-        [InlineKeyboardButton("ℹ️ Статус магазина", callback_data="shop_info")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -221,8 +220,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔍 Отправьте ID заказа командой:\n"
             "`/order 54172200065`",
         )
-    elif data == "shop_info":
-        await show_shop_info(query)
     elif data == "stock_info":
         await show_stock_info(query)
     elif data.startswith("order_detail_"):
@@ -849,38 +846,6 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
-
-
-# ─── Информация о магазине ───────────────────────────────────────────
-
-async def show_shop_info(query):
-    """Показать информацию о магазине."""
-    try:
-        with YandexMarketAPI() as api:
-            data = api.get_campaign_info()
-
-        campaign = data.get("campaign", {})
-        business = campaign.get("business", {})
-
-        text = (
-            f"🏪 *Информация о магазине*\n\n"
-            f"📛 Магазин: {campaign.get('domain', '?')}\n"
-            f"🏢 Бизнес: {business.get('name', '?')}\n"
-            f"🆔 Campaign ID: `{campaign.get('id', '?')}`\n"
-            f"🆔 Business ID: `{business.get('id', '?')}`\n"
-            f"📦 Тип: {campaign.get('placementType', '?')}\n"
-            f"🔗 API: {campaign.get('apiAvailability', '?')}\n"
-        )
-
-        await safe_edit_message(
-            query,
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
-            ]),
-        )
-    except Exception as e:
-        await safe_edit_message(query, f"❌ Ошибка: {e}")
 
 
 # ─── Информация о складе аккаунтов ──────────────────────────────────
