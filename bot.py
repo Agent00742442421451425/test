@@ -868,6 +868,44 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
 
                 logger.info(f"🔔 Новый заказ: {oid} — {product_name}")
 
+                # ═══════ УВЕДОМЛЕНИЕ О НОВОМ ЗАКАЗЕ В ГРУППУ ═══════
+                new_order_text = (
+                    f"🔔 *НОВЫЙ ЗАКАЗ — ТРЕБУЕТ ОБРАБОТКИ!*\n\n"
+                    f"📦 Заказ №`{oid}`\n"
+                    f"💰 Сумма: {order.get('buyerTotal', 0)}₽\n"
+                    f"📅 Дата: {order.get('creationDate', '?')}\n"
+                    f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
+                    f"🛒 *Товары:*\n{items_text}\n"
+                    f"Выберите способ обработки:"
+                )
+                detail_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔑 Выдать аккаунт (авто)",
+                        callback_data=f"auto_deliver_{oid}",
+                    )],
+                    [InlineKeyboardButton(
+                        "👨‍💼 Ручная обработка (менеджер)",
+                        callback_data=f"manual_process_{oid}",
+                    )],
+                    [InlineKeyboardButton(
+                        "📋 Детали заказа",
+                        callback_data=f"order_detail_{oid}",
+                    )],
+                ])
+
+                # Отправляем уведомление о новом заказе в группу
+                if TELEGRAM_GROUP_ID:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_GROUP_ID,
+                            text=new_order_text,
+                            reply_markup=detail_kb,
+                            parse_mode="Markdown",
+                        )
+                        logger.info(f"✅ Уведомление о новом заказе {oid} отправлено в группу")
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки уведомления о новом заказе в группу: {e}")
+
                 # ═══════ ПОПЫТКА АВТОВЫДАЧИ ═══════
                 ok, report, account = await asyncio.to_thread(
                     _do_deliver, api, oid, order
@@ -875,7 +913,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
 
                 if ok:
                     # ✅ Аккаунт выдан автоматически
-                    text = (
+                    success_text = (
                         f"✅ *АВТОВЫДАЧА — заказ обработан!*\n\n"
                         f"{report}\n\n"
                         f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
@@ -884,58 +922,56 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                         f"Пароль: `{account['password']}`\n"
                     )
                     if account.get("2fa"):
-                        text += f"2FA: `{account['2fa']}`\n"
+                        success_text += f"2FA: `{account['2fa']}`\n"
 
-                    keyboard = InlineKeyboardMarkup([
+                    success_kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton(
                             "📋 Детали заказа",
                             callback_data=f"order_detail_{oid}",
                         )],
                     ])
+
+                    # Отправляем уведомление об успешной автовыдаче в группу
+                    if TELEGRAM_GROUP_ID:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=TELEGRAM_GROUP_ID,
+                                text=success_text,
+                                reply_markup=success_kb,
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки уведомления об автовыдаче в группу: {e}")
+
+                    # Отправляем детали админам в ЛС
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=admin_id,
+                                text=success_text,
+                                reply_markup=success_kb,
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки админу {admin_id}: {e}")
                 else:
-                    # ❌ Не удалось — ручные кнопки
-                    text = (
-                        f"🔔 *НОВЫЙ ЗАКАЗ — ТРЕБУЕТ ОБРАБОТКИ!*\n\n"
+                    # ❌ Не удалось — отправляем уведомление об ошибке в группу
+                    error_text = (
+                        f"⚠️ *АВТОВЫДАЧА НЕ УДАЛАСЬ*\n\n"
                         f"📦 Заказ №`{oid}`\n"
-                        f"💰 Сумма: {order.get('buyerTotal', 0)}₽\n"
-                        f"📅 Дата: {order.get('creationDate', '?')}\n"
-                        f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
-                        f"🛒 *Товары:*\n{items_text}\n"
                         f"⚠️ *{report}*\n\n"
-                        f"Выберите способ обработки:"
+                        f"Требуется ручная обработка!"
                     )
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(
-                            "🔑 Выдать аккаунт (авто)",
-                            callback_data=f"auto_deliver_{oid}",
-                        )],
-                        [InlineKeyboardButton(
-                            "👨‍💼 Ручная обработка (менеджер)",
-                            callback_data=f"manual_process_{oid}",
-                        )],
-                        [InlineKeyboardButton(
-                            "📋 Детали заказа",
-                            callback_data=f"order_detail_{oid}",
-                        )],
-                    ])
-
-                # Отправляем уведомления: в группу + всем админам в ЛС
-                targets = []
-                if TELEGRAM_GROUP_ID:
-                    targets.append(("группа", TELEGRAM_GROUP_ID))
-                for admin_id in ADMIN_IDS:
-                    targets.append((f"админ {admin_id}", admin_id))
-
-                for label, chat_id in targets:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            reply_markup=keyboard,
-                            parse_mode="Markdown",
-                        )
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки в {label} ({chat_id}): {e}")
+                    if TELEGRAM_GROUP_ID:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=TELEGRAM_GROUP_ID,
+                                text=error_text,
+                                reply_markup=detail_kb,
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки уведомления об ошибке в группу: {e}")
 
     except Exception as e:
         logger.error(f"Ошибка polling заказов: {e}")

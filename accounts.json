@@ -38,7 +38,7 @@
       "login": "test_win2@testmail.com",
       "password": "TestWin@Secure42",
       "2fa": "ABCD-EFGH-1234",
-      "used": false
+      "used": true
     },
     {
       "product": "ТЕСТ — Windows 10 Pro",
