@@ -86,7 +86,7 @@ class YandexMarketAPI:
 
     # ─── PUT-запросы: Обновление статуса заказа ─────────────────────
 
-    def update_order_status(self, order_id, status, substatus=None):
+    def update_order_status(self, order_id, status, substatus=None, check_current=True):
         """
         Обновить статус заказа.
         PUT /campaigns/{campaignId}/orders/{orderId}/status
@@ -98,7 +98,26 @@ class YandexMarketAPI:
             "substatus": "READY_TO_SHIP"   ← опционально
           }
         }
+        
+        Args:
+            check_current: Если True, проверяет текущий статус перед обновлением
         """
+        # Проверяем текущий статус перед обновлением, чтобы избежать лишних запросов
+        if check_current:
+            try:
+                order_data = self.get_order(order_id)
+                current_order = order_data.get("order", {})
+                current_status = current_order.get("status", "")
+                current_sub = current_order.get("substatus", "")
+                
+                # Если статус уже установлен, возвращаем успех без запроса
+                if current_status == status:
+                    if substatus is None or current_sub == substatus:
+                        log.info(f"Заказ {order_id}: статус уже {status}/{substatus}, пропускаем обновление")
+                        return {"order": {"status": status, "substatus": substatus or current_sub}}
+            except Exception as e:
+                log.warning(f"Не удалось проверить текущий статус заказа {order_id}: {e}, продолжаем обновление")
+        
         url = f"/campaigns/{self.campaign_id}/orders/{order_id}/status"
         order_body = {"status": status}
         if substatus:
@@ -107,10 +126,31 @@ class YandexMarketAPI:
 
         log.info(f"PUT {url}  body={body}")
         response = self.client.put(url, json=body)
-        self._raise_on_error(
-            response,
-            f"Смена статуса заказа {order_id} → {status}/{substatus}",
-        )
+        
+        # Обрабатываем ошибки более мягко
+        try:
+            self._raise_on_error(
+                response,
+                f"Смена статуса заказа {order_id} → {status}/{substatus}",
+            )
+        except RuntimeError as e:
+            error_str = str(e)
+            # Если ошибка связана с тем, что статус уже установлен или переход невозможен,
+            # проверяем текущий статус и возвращаем его
+            if "400" in error_str or "already" in error_str.lower() or "invalid" in error_str.lower():
+                try:
+                    order_data = self.get_order(order_id)
+                    current_order = order_data.get("order", {})
+                    current_status = current_order.get("status", "")
+                    current_sub = current_order.get("substatus", "")
+                    log.warning(f"Заказ {order_id}: не удалось установить {status}/{substatus}, текущий статус: {current_status}/{current_sub}")
+                    # Если текущий статус уже целевой, возвращаем успех
+                    if current_status == status:
+                        return {"order": {"status": status, "substatus": current_sub}}
+                except:
+                    pass
+            raise
+        
         return response.json()
 
     def set_order_boxes(self, order_id, shipment_id, items=None):
@@ -237,155 +277,149 @@ class YandexMarketAPI:
         time.sleep(5)  # Увеличиваем время ожидания после boxes
 
         # ── Шаг 4: → DELIVERY ────────────────────────────────────
-        # Делаем несколько попыток с проверкой статуса
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            order_data = self.get_order(order_id)
-            order = order_data.get("order", {})
-            cur_status = order.get("status", "")
-            cur_sub = order.get("substatus", "")
-            log.info(f"Заказ {order_id}: перед DELIVERY (попытка {attempt + 1}) → {cur_status}/{cur_sub}")
+        # Проверяем статус и переходим в DELIVERY только если нужно
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        cur_sub = order.get("substatus", "")
+        log.info(f"Заказ {order_id}: перед DELIVERY → {cur_status}/{cur_sub}")
 
-            if cur_status == "DELIVERY":
-                results.append(("DELIVERY", "OK (автоматически после boxes)"))
-                log.info(f"Заказ {order_id}: → DELIVERY ✅ (автоматически)")
-                break
-            elif cur_status == "DELIVERED":
-                results.append(("DELIVERY", "пропуск — уже DELIVERED"))
-                results.append(("ИТОГ", "Заказ уже доставлен"))
-                return results
-            elif cur_status == "PROCESSING":
-                # После boxes заказ может быть в PROCESSING (включая READY_TO_SHIP)
-                # Пытаемся перевести в DELIVERY
+        if cur_status == "DELIVERY":
+            results.append(("DELIVERY", "OK (автоматически после boxes)"))
+            log.info(f"Заказ {order_id}: → DELIVERY ✅ (автоматически)")
+        elif cur_status == "DELIVERED":
+            results.append(("DELIVERY", "пропуск — уже DELIVERED"))
+            results.append(("ИТОГ", "Заказ уже доставлен"))
+            return results
+        elif cur_status == "PROCESSING":
+            # После boxes заказ может быть в PROCESSING (включая READY_TO_SHIP)
+            # Пытаемся перевести в DELIVERY только один раз
+            try:
+                self.update_order_status(order_id, "DELIVERY", check_current=True)
+                time.sleep(3)  # Даем время API обработать
+                # Проверяем результат
+                check_data = self.get_order(order_id)
+                check_order = check_data.get("order", {})
+                if check_order.get("status") == "DELIVERY":
+                    results.append(("DELIVERY", "OK"))
+                    log.info(f"Заказ {order_id}: → DELIVERY ✅")
+                else:
+                    # Статус не изменился, возможно API автоматически перевел в DELIVERED
+                    if check_order.get("status") == "DELIVERED":
+                        results.append(("DELIVERY", "пропуск — автоматически перешел в DELIVERED"))
+                        log.info(f"Заказ {order_id}: автоматически перешел в DELIVERED")
+                    else:
+                        results.append(("DELIVERY", f"статус не изменился, текущий: {check_order.get('status')}"))
+            except Exception as e:
+                error_str = str(e)
+                # Проверяем текущий статус - возможно он уже изменился
                 try:
-                    self.update_order_status(order_id, "DELIVERY")
-                    time.sleep(2)  # Ждем обновления статуса
-                    # Проверяем, что статус изменился
                     check_data = self.get_order(order_id)
-                    check_order = check_data.get("order", {})
-                    if check_order.get("status") == "DELIVERY":
-                        results.append(("DELIVERY", "OK"))
-                        log.info(f"Заказ {order_id}: → DELIVERY ✅")
-                        break
+                    check_status = check_data.get("order", {}).get("status")
+                    if check_status == "DELIVERY":
+                        results.append(("DELIVERY", "OK (изменился автоматически)"))
+                        log.info(f"Заказ {order_id}: → DELIVERY ✅ (автоматически)")
+                    elif check_status == "DELIVERED":
+                        results.append(("DELIVERY", "пропуск — автоматически перешел в DELIVERED"))
                     else:
-                        if attempt < max_attempts - 1:
-                            log.warning(f"Заказ {order_id}: статус не изменился после DELIVERY, попытка {attempt + 2}")
-                            time.sleep(2)
-                            continue
-                        else:
-                            results.append(("DELIVERY", f"статус не изменился после обновления"))
-                except Exception as e:
-                    error_str = str(e)
-                    if attempt < max_attempts - 1:
-                        log.warning(f"Заказ {order_id}: ошибка DELIVERY, попытка {attempt + 2}: {error_str}")
-                        time.sleep(2)
-                        continue
-                    else:
-                        results.append(("DELIVERY", str(e)))
-                        # Не прерываем — попробуем DELIVERED на случай если маркет уже сменил
-            else:
-                # Если статус не PROCESSING и не DELIVERY/DELIVERED, пробуем сразу DELIVERED
-                results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
-                break
-            
-            if attempt < max_attempts - 1:
-                time.sleep(2)
+                        results.append(("DELIVERY", f"ошибка: {error_str[:100]}"))
+                except:
+                    results.append(("DELIVERY", f"ошибка: {error_str[:100]}"))
+        else:
+            # Если статус не PROCESSING и не DELIVERY/DELIVERED, пропускаем DELIVERY
+            results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
 
         time.sleep(2)
 
         # ── Шаг 5: → DELIVERED ────────────────────────────────────
-        # Для DIGITAL товаров делаем несколько попыток перевода в DELIVERED
-        max_delivered_attempts = 5
-        delivered_success = False
-        
-        for attempt in range(max_delivered_attempts):
-            order_data = self.get_order(order_id)
-            order = order_data.get("order", {})
-            cur_status = order.get("status", "")
-            cur_sub = order.get("substatus", "")
-            delivery_type = order.get("delivery", {}).get("type", "")
-            log.info(f"Заказ {order_id}: перед DELIVERED (попытка {attempt + 1}) → {cur_status}/{cur_sub}, тип доставки: {delivery_type}")
+        # Для DIGITAL товаров делаем одну попытку перевода в DELIVERED
+        # с проверкой текущего статуса перед обновлением
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        cur_sub = order.get("substatus", "")
+        delivery_type = order.get("delivery", {}).get("type", "")
+        log.info(f"Заказ {order_id}: перед DELIVERED → {cur_status}/{cur_sub}, тип доставки: {delivery_type}")
 
-            if cur_status == "DELIVERED":
-                results.append(("DELIVERED", "OK (уже доставлен)"))
-                log.info(f"Заказ {order_id}: → DELIVERED ✅")
-                delivered_success = True
-                break
-            elif cur_status == "DELIVERY":
+        if cur_status == "DELIVERED":
+            results.append(("DELIVERED", "OK (уже доставлен)"))
+            log.info(f"Заказ {order_id}: → DELIVERED ✅")
+        elif cur_status == "DELIVERY":
+            # Стандартный переход: DELIVERY → DELIVERED
+            try:
+                self.update_order_status(order_id, "DELIVERED", check_current=True)
+                time.sleep(3)  # Даем время API обработать
+                # Проверяем результат
+                check_data = self.get_order(order_id)
+                if check_data.get("order", {}).get("status") == "DELIVERED":
+                    results.append(("DELIVERED", "OK"))
+                    log.info(f"Заказ {order_id}: → DELIVERED ✅")
+                else:
+                    results.append(("DELIVERED", f"статус не изменился, текущий: {check_data.get('order', {}).get('status')}"))
+            except Exception as e:
+                error_str = str(e)
+                # Проверяем, может статус уже изменился
                 try:
-                    self.update_order_status(order_id, "DELIVERED")
-                    time.sleep(2)
-                    # Проверяем, что статус изменился
                     check_data = self.get_order(order_id)
                     if check_data.get("order", {}).get("status") == "DELIVERED":
-                        results.append(("DELIVERED", "OK"))
-                        log.info(f"Заказ {order_id}: → DELIVERED ✅")
-                        delivered_success = True
-                        break
+                        results.append(("DELIVERED", "OK (изменился автоматически)"))
+                        log.info(f"Заказ {order_id}: → DELIVERED ✅ (автоматически)")
                     else:
-                        if attempt < max_delivered_attempts - 1:
-                            log.warning(f"Заказ {order_id}: статус не изменился после DELIVERED, попытка {attempt + 2}")
-                            time.sleep(2)
-                            continue
-                except Exception as e:
-                    error_str = str(e)
-                    if attempt < max_delivered_attempts - 1:
-                        log.warning(f"Заказ {order_id}: ошибка DELIVERED, попытка {attempt + 2}: {error_str}")
-                        time.sleep(2)
-                        continue
-                    else:
-                        results.append(("DELIVERED", str(e)))
-            elif cur_status == "PROCESSING":
-                # Если заказ все еще в PROCESSING после boxes, пробуем напрямую DELIVERED
-                # (для цифровых товаров DIGITAL это может работать)
-                try:
-                    self.update_order_status(order_id, "DELIVERED")
-                    time.sleep(2)
-                    # Проверяем, что статус изменился
-                    check_data = self.get_order(order_id)
-                    if check_data.get("order", {}).get("status") == "DELIVERED":
-                        results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
-                        log.info(f"Заказ {order_id}: → DELIVERED ✅ (напрямую)")
-                        delivered_success = True
-                        break
-                    else:
-                        # Если не получилось напрямую, пробуем через DELIVERY
-                        if attempt < max_delivered_attempts - 1:
-                            try:
-                                self.update_order_status(order_id, "DELIVERY")
-                                time.sleep(2)
-                                self.update_order_status(order_id, "DELIVERED")
-                                time.sleep(2)
-                                check_data2 = self.get_order(order_id)
-                                if check_data2.get("order", {}).get("status") == "DELIVERED":
-                                    results.append(("DELIVERED", "OK (через DELIVERY)"))
-                                    log.info(f"Заказ {order_id}: → DELIVERED ✅ (через DELIVERY)")
-                                    delivered_success = True
-                                    break
-                            except Exception as e2:
-                                log.warning(f"Заказ {order_id}: ошибка через DELIVERY, попытка {attempt + 2}: {str(e2)}")
-                                time.sleep(2)
-                                continue
-                except Exception as e:
-                    error_str = str(e)
-                    if attempt < max_delivered_attempts - 1:
-                        log.warning(f"Заказ {order_id}: ошибка DELIVERED напрямую, попытка {attempt + 2}: {error_str}")
-                        time.sleep(2)
-                        continue
-                    else:
-                        results.append(("DELIVERED", f"ошибка: {str(e)}"))
-            else:
-                results.append((
-                    "DELIVERED",
-                    f"невозможно — текущий статус {cur_status}/{cur_sub}",
-                ))
-                break
-            
-            if attempt < max_delivered_attempts - 1:
-                time.sleep(2)
-        
-        if not delivered_success:
-            log.error(f"Заказ {order_id}: НЕ УДАЛОСЬ перевести в DELIVERED после {max_delivered_attempts} попыток")
+                        results.append(("DELIVERED", f"ошибка: {error_str[:100]}"))
+                except:
+                    results.append(("DELIVERED", f"ошибка: {error_str[:100]}"))
+        elif cur_status == "PROCESSING":
+            # Для DIGITAL товаров после boxes может быть разрешен прямой переход
+            # Но сначала пробуем через DELIVERY
+            try:
+                # Пробуем сначала DELIVERY
+                if cur_sub == "READY_TO_SHIP":
+                    try:
+                        self.update_order_status(order_id, "DELIVERY", check_current=True)
+                        time.sleep(3)
+                        check_data = self.get_order(order_id)
+                        if check_data.get("order", {}).get("status") == "DELIVERY":
+                            # Теперь пробуем DELIVERED
+                            self.update_order_status(order_id, "DELIVERED", check_current=True)
+                            time.sleep(3)
+                            check_data2 = self.get_order(order_id)
+                            if check_data2.get("order", {}).get("status") == "DELIVERED":
+                                results.append(("DELIVERED", "OK (через DELIVERY)"))
+                                log.info(f"Заказ {order_id}: → DELIVERED ✅ (через DELIVERY)")
+                            else:
+                                results.append(("DELIVERED", f"не удалось перейти из DELIVERY, текущий: {check_data2.get('order', {}).get('status')}"))
+                        else:
+                            # Если DELIVERY не сработал, пробуем напрямую DELIVERED
+                            self.update_order_status(order_id, "DELIVERED", check_current=True)
+                            time.sleep(3)
+                            check_data3 = self.get_order(order_id)
+                            if check_data3.get("order", {}).get("status") == "DELIVERED":
+                                results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
+                                log.info(f"Заказ {order_id}: → DELIVERED ✅ (напрямую)")
+                            else:
+                                results.append(("DELIVERED", f"не удалось перейти, текущий: {check_data3.get('order', {}).get('status')}"))
+                    except Exception as e2:
+                        error_str = str(e2)
+                        # Проверяем текущий статус
+                        try:
+                            check_data = self.get_order(order_id)
+                            current_status = check_data.get("order", {}).get("status")
+                            if current_status == "DELIVERED":
+                                results.append(("DELIVERED", "OK (изменился автоматически)"))
+                            else:
+                                results.append(("DELIVERED", f"ошибка: {error_str[:100]}"))
+                        except:
+                            results.append(("DELIVERED", f"ошибка: {error_str[:100]}"))
+                else:
+                    results.append(("DELIVERED", f"пропуск — PROCESSING/{cur_sub}, не READY_TO_SHIP"))
+            except Exception as e:
+                error_str = str(e)
+                results.append(("DELIVERED", f"ошибка: {error_str[:100]}"))
+        else:
+            results.append((
+                "DELIVERED",
+                f"невозможно — текущий статус {cur_status}/{cur_sub}",
+            ))
 
         results.append(("ИТОГ", "Обработка завершена"))
         return results
