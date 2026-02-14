@@ -86,7 +86,7 @@
       "login": "test_vpn1@testmail.com",
       "password": "VPN!Secure2026",
       "2fa": "",
-      "used": false
+      "used": true
     },
     {
       "product": "ТЕСТ — VPN Premium",

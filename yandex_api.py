@@ -223,34 +223,62 @@ class YandexMarketAPI:
         else:
             results.append(("ОТГРУЗКА", "нет shipments"))
 
-        time.sleep(3)
+        time.sleep(5)  # Увеличиваем время ожидания после boxes
 
         # ── Шаг 4: → DELIVERY ────────────────────────────────────
-        order_data = self.get_order(order_id)
-        order = order_data.get("order", {})
-        cur_status = order.get("status", "")
-        cur_sub = order.get("substatus", "")
-        log.info(f"Заказ {order_id}: перед DELIVERY → {cur_status}/{cur_sub}")
+        # Делаем несколько попыток с проверкой статуса
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            order_data = self.get_order(order_id)
+            order = order_data.get("order", {})
+            cur_status = order.get("status", "")
+            cur_sub = order.get("substatus", "")
+            log.info(f"Заказ {order_id}: перед DELIVERY (попытка {attempt + 1}) → {cur_status}/{cur_sub}")
 
-        if cur_status == "DELIVERY":
-            results.append(("DELIVERY", "уже в этом статусе"))
-        elif cur_status == "DELIVERED":
-            results.append(("DELIVERY", "пропуск — уже DELIVERED"))
-            results.append(("ИТОГ", "Заказ уже доставлен"))
-            return results
-        elif cur_status == "PROCESSING":
-            # После boxes заказ может быть в PROCESSING (включая READY_TO_SHIP)
-            # Пытаемся перевести в DELIVERY
-            try:
-                self.update_order_status(order_id, "DELIVERY")
-                results.append(("DELIVERY", "OK"))
-                log.info(f"Заказ {order_id}: → DELIVERY ✅")
-            except Exception as e:
-                results.append(("DELIVERY", str(e)))
-                # Не прерываем — попробуем DELIVERED на случай если маркет уже сменил
-        else:
-            # Если статус не PROCESSING и не DELIVERY/DELIVERED, пробуем сразу DELIVERED
-            results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
+            if cur_status == "DELIVERY":
+                results.append(("DELIVERY", "OK (автоматически после boxes)"))
+                log.info(f"Заказ {order_id}: → DELIVERY ✅ (автоматически)")
+                break
+            elif cur_status == "DELIVERED":
+                results.append(("DELIVERY", "пропуск — уже DELIVERED"))
+                results.append(("ИТОГ", "Заказ уже доставлен"))
+                return results
+            elif cur_status == "PROCESSING":
+                # После boxes заказ может быть в PROCESSING (включая READY_TO_SHIP)
+                # Пытаемся перевести в DELIVERY
+                try:
+                    self.update_order_status(order_id, "DELIVERY")
+                    time.sleep(2)  # Ждем обновления статуса
+                    # Проверяем, что статус изменился
+                    check_data = self.get_order(order_id)
+                    check_order = check_data.get("order", {})
+                    if check_order.get("status") == "DELIVERY":
+                        results.append(("DELIVERY", "OK"))
+                        log.info(f"Заказ {order_id}: → DELIVERY ✅")
+                        break
+                    else:
+                        if attempt < max_attempts - 1:
+                            log.warning(f"Заказ {order_id}: статус не изменился после DELIVERY, попытка {attempt + 2}")
+                            time.sleep(2)
+                            continue
+                        else:
+                            results.append(("DELIVERY", f"статус не изменился после обновления"))
+                except Exception as e:
+                    error_str = str(e)
+                    if attempt < max_attempts - 1:
+                        log.warning(f"Заказ {order_id}: ошибка DELIVERY, попытка {attempt + 2}: {error_str}")
+                        time.sleep(2)
+                        continue
+                    else:
+                        results.append(("DELIVERY", str(e)))
+                        # Не прерываем — попробуем DELIVERED на случай если маркет уже сменил
+            else:
+                # Если статус не PROCESSING и не DELIVERY/DELIVERED, пробуем сразу DELIVERED
+                results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
+                break
+            
+            if attempt < max_attempts - 1:
+                time.sleep(2)
 
         time.sleep(2)
 
