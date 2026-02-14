@@ -283,43 +283,98 @@ class YandexMarketAPI:
         time.sleep(2)
 
         # ── Шаг 5: → DELIVERED ────────────────────────────────────
-        order_data = self.get_order(order_id)
-        order = order_data.get("order", {})
-        cur_status = order.get("status", "")
-        cur_sub = order.get("substatus", "")
-        log.info(f"Заказ {order_id}: перед DELIVERED → {cur_status}/{cur_sub}")
+        # Для DIGITAL товаров делаем несколько попыток перевода в DELIVERED
+        max_delivered_attempts = 5
+        delivered_success = False
+        
+        for attempt in range(max_delivered_attempts):
+            order_data = self.get_order(order_id)
+            order = order_data.get("order", {})
+            cur_status = order.get("status", "")
+            cur_sub = order.get("substatus", "")
+            delivery_type = order.get("delivery", {}).get("type", "")
+            log.info(f"Заказ {order_id}: перед DELIVERED (попытка {attempt + 1}) → {cur_status}/{cur_sub}, тип доставки: {delivery_type}")
 
-        if cur_status == "DELIVERED":
-            results.append(("DELIVERED", "уже в этом статусе"))
-        elif cur_status == "DELIVERY":
-            try:
-                self.update_order_status(order_id, "DELIVERED")
-                results.append(("DELIVERED", "OK"))
+            if cur_status == "DELIVERED":
+                results.append(("DELIVERED", "OK (уже доставлен)"))
                 log.info(f"Заказ {order_id}: → DELIVERED ✅")
-            except Exception as e:
-                results.append(("DELIVERED", str(e)))
-        elif cur_status == "PROCESSING":
-            # Если заказ все еще в PROCESSING после boxes, пробуем напрямую DELIVERED
-            # (для цифровых товаров это может работать)
-            try:
-                self.update_order_status(order_id, "DELIVERED")
-                results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
-                log.info(f"Заказ {order_id}: → DELIVERED ✅ (напрямую)")
-            except Exception as e:
-                # Если не получилось напрямую, пробуем через DELIVERY
+                delivered_success = True
+                break
+            elif cur_status == "DELIVERY":
                 try:
-                    self.update_order_status(order_id, "DELIVERY")
-                    time.sleep(1)
                     self.update_order_status(order_id, "DELIVERED")
-                    results.append(("DELIVERED", "OK (через DELIVERY)"))
-                    log.info(f"Заказ {order_id}: → DELIVERED ✅ (через DELIVERY)")
-                except Exception as e2:
-                    results.append(("DELIVERED", f"ошибка: {str(e2)}"))
-        else:
-            results.append((
-                "DELIVERED",
-                f"невозможно — текущий статус {cur_status}/{cur_sub}",
-            ))
+                    time.sleep(2)
+                    # Проверяем, что статус изменился
+                    check_data = self.get_order(order_id)
+                    if check_data.get("order", {}).get("status") == "DELIVERED":
+                        results.append(("DELIVERED", "OK"))
+                        log.info(f"Заказ {order_id}: → DELIVERED ✅")
+                        delivered_success = True
+                        break
+                    else:
+                        if attempt < max_delivered_attempts - 1:
+                            log.warning(f"Заказ {order_id}: статус не изменился после DELIVERED, попытка {attempt + 2}")
+                            time.sleep(2)
+                            continue
+                except Exception as e:
+                    error_str = str(e)
+                    if attempt < max_delivered_attempts - 1:
+                        log.warning(f"Заказ {order_id}: ошибка DELIVERED, попытка {attempt + 2}: {error_str}")
+                        time.sleep(2)
+                        continue
+                    else:
+                        results.append(("DELIVERED", str(e)))
+            elif cur_status == "PROCESSING":
+                # Если заказ все еще в PROCESSING после boxes, пробуем напрямую DELIVERED
+                # (для цифровых товаров DIGITAL это может работать)
+                try:
+                    self.update_order_status(order_id, "DELIVERED")
+                    time.sleep(2)
+                    # Проверяем, что статус изменился
+                    check_data = self.get_order(order_id)
+                    if check_data.get("order", {}).get("status") == "DELIVERED":
+                        results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
+                        log.info(f"Заказ {order_id}: → DELIVERED ✅ (напрямую)")
+                        delivered_success = True
+                        break
+                    else:
+                        # Если не получилось напрямую, пробуем через DELIVERY
+                        if attempt < max_delivered_attempts - 1:
+                            try:
+                                self.update_order_status(order_id, "DELIVERY")
+                                time.sleep(2)
+                                self.update_order_status(order_id, "DELIVERED")
+                                time.sleep(2)
+                                check_data2 = self.get_order(order_id)
+                                if check_data2.get("order", {}).get("status") == "DELIVERED":
+                                    results.append(("DELIVERED", "OK (через DELIVERY)"))
+                                    log.info(f"Заказ {order_id}: → DELIVERED ✅ (через DELIVERY)")
+                                    delivered_success = True
+                                    break
+                            except Exception as e2:
+                                log.warning(f"Заказ {order_id}: ошибка через DELIVERY, попытка {attempt + 2}: {str(e2)}")
+                                time.sleep(2)
+                                continue
+                except Exception as e:
+                    error_str = str(e)
+                    if attempt < max_delivered_attempts - 1:
+                        log.warning(f"Заказ {order_id}: ошибка DELIVERED напрямую, попытка {attempt + 2}: {error_str}")
+                        time.sleep(2)
+                        continue
+                    else:
+                        results.append(("DELIVERED", f"ошибка: {str(e)}"))
+            else:
+                results.append((
+                    "DELIVERED",
+                    f"невозможно — текущий статус {cur_status}/{cur_sub}",
+                ))
+                break
+            
+            if attempt < max_delivered_attempts - 1:
+                time.sleep(2)
+        
+        if not delivered_success:
+            log.error(f"Заказ {order_id}: НЕ УДАЛОСЬ перевести в DELIVERED после {max_delivered_attempts} попыток")
 
         results.append(("ИТОГ", "Обработка завершена"))
         return results
