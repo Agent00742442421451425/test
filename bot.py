@@ -9,7 +9,7 @@ import logging
 import os
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonDefault
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -55,12 +55,28 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode="Markdown
             parse_mode=parse_mode,
         )
     except BadRequest as e:
-        if "Message is not modified" in str(e):
+        err_str = str(e).lower()
+        if "not modified" in err_str or "exactly the same" in err_str:
             logger.debug(f"Message not modified for query {query.id}. Ignoring.")
         else:
             logger.error(f"Ошибка редактирования сообщения для query {query.id}: {e}")
     except Exception as e:
-        logger.error(f"Неизвестная ошибка редактирования сообщения для query {query.id}: {e}")
+        err_str = str(e).lower()
+        if "not modified" in err_str or "exactly the same" in err_str:
+            logger.debug(f"Message not modified for query {query.id}. Ignoring.")
+        else:
+            logger.error(f"Неизвестная ошибка редактирования сообщения для query {query.id}: {e}")
+
+
+def escape_md(s):
+    """Экранировать символы для Telegram Markdown (избегаем 'Can't parse entities')."""
+    if s is None:
+        return ""
+    s = str(s)
+    for c in ("_", "*", "[", "`"):
+        s = s.replace(c, "\\" + c)
+    return s
+
 
 # Путь к файлу склада аккаунтов
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
@@ -224,7 +240,7 @@ def main_menu_keyboard():
     """Клавиатура главного меню."""
     keyboard = [
         [InlineKeyboardButton("📦 Новые заказы", callback_data="orders_new")],
-        [InlineKeyboardButton("📋 Все заказы", callback_data="orders_all")],
+        [InlineKeyboardButton("📊 История заказов (БД)", callback_data="orders_history")],
         [InlineKeyboardButton("🔄 Проверить заказ по ID", callback_data="order_check")],
         [InlineKeyboardButton("📦 Склад аккаунтов", callback_data="stock_info")],
         [InlineKeyboardButton("➕ Добавить аккаунты", callback_data="add_accounts")],
@@ -243,6 +259,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
+    # Сбрасываем кнопку «Статус магазина» (Menu Button) для этого чата
+    try:
+        await context.bot.set_chat_menu_button(
+            chat_id=update.effective_chat.id,
+            menu_button=MenuButtonDefault(),
+        )
+    except Exception as e:
+        logger.debug(f"set_chat_menu_button: {e}")
+
     await update.message.reply_text(
         "🟢 *Яндекс Маркет DBS Бот*\n\n"
         "Управление заказами магазина\n"
@@ -259,6 +284,15 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
+
+    # Сбрасываем кнопку «Статус магазина» (Menu Button) для этого чата
+    try:
+        await context.bot.set_chat_menu_button(
+            chat_id=update.effective_chat.id,
+            menu_button=MenuButtonDefault(),
+        )
+    except Exception as e:
+        logger.debug(f"set_chat_menu_button: {e}")
 
     await update.message.reply_text(
         "📌 *Главное меню*\n\nВыберите действие:",
@@ -283,11 +317,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "orders_new":
         await show_orders(query, status="PROCESSING", page=1)
-    elif data == "orders_all":
-        await show_orders(query, status=None, page=1)
-    elif data.startswith("orders_all_page_"):
-        page = int(data.replace("orders_all_page_", ""))
-        await show_orders(query, status=None, page=page)
     elif data.startswith("orders_processing_page_"):
         page = int(data.replace("orders_processing_page_", ""))
         await show_orders(query, status="PROCESSING", page=page)
@@ -321,6 +350,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("force_delivered_"):
         order_id = int(data.replace("force_delivered_", ""))
         await force_update_to_delivered(query, order_id)
+    elif data.startswith("step_delivery_"):
+        order_id = int(data.replace("step_delivery_", ""))
+        await step_delivery_handler(query, order_id)
+    elif data.startswith("step_delivered_"):
+        order_id = int(data.replace("step_delivered_", ""))
+        await step_delivered_handler(query, order_id)
     elif data == "add_accounts":
         await start_add_accounts(query, context)
     elif data == "back_menu":
@@ -336,49 +371,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Просмотр заказов ───────────────────────────────────────────────
 
 async def show_orders(query, status=None, page=1):
-    """Показать список заказов с пагинацией (10 заказов на странице)."""
+    """Показать список заказов из нашей БД (orders.json) с пагинацией. После очистки БД список пуст."""
     try:
-        with YandexMarketAPI() as api:
-            data = api.get_orders(status=status, page=page, page_size=10)
-
-        orders = data.get("orders", [])
-        pager = data.get("pager", {})
-        
-        # Вычисляем пагинацию вручную, если API не вернул
-        total = pager.get("total", len(orders))
-        current_page = pager.get("currentPage", page)
+        # Берём заказы из локальной БД, а не из API — тогда «очистка заказов» реально очищает список
         page_size = 10
+        offset = (page - 1) * page_size
+        all_orders = db.get_all_orders(limit=500, offset=0)
+        # Для «Новые заказы» показываем только не доставленные (требуют внимания)
+        if status == "PROCESSING":
+            all_orders = [o for o in all_orders if o.get("our_status") not in ("ВЫДАН", "ЗАВЕРШЕН")]
+        orders = all_orders[offset:offset + page_size]
+        total = len(all_orders)
         total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        current_page = min(page, total_pages) if total_pages else 1
 
         if not orders:
-            status_text = f" (статус: {status})" if status else ""
+            status_text = " (новые)" if status == "PROCESSING" else ""
             await safe_edit_message(
                 query,
-                f"📭 Заказов{status_text} не найдено.",
+                f"📭 Заказов{status_text} не найдено.\n\n_Список из локальной БД \\(orders\\.json\\)\\. Очистка заказов очищает и этот список\\._",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")]
                 ]),
             )
             return
 
-        # ТОЛЬКО заголовок, БЕЗ деталей
-        text = "📦 *Список заказов:*"
+        text = f"📦 *Список заказов:*\n_Обновлено: {datetime.now().strftime('%H:%M')}_\n"
         keyboard = []
 
-        # Только inline кнопки с заказами
         for order in orders:
-            oid = order["id"]
+            oid = order["order_id"]
             order_status = order.get("status", "?")
-            total_price = order.get("buyerTotal", 0)
-            
-            # Формируем текст кнопки с краткой информацией
+            total_price = order.get("total", 0)
             status_emoji = {
                 "PROCESSING": "🔄",
                 "DELIVERY": "🚚",
                 "DELIVERED": "✅",
                 "CANCELLED": "❌",
             }.get(order_status, "📦")
-            
             button_text = f"{status_emoji} Заказ {oid} — {total_price}₽"
             keyboard.append([
                 InlineKeyboardButton(
@@ -425,7 +455,7 @@ async def show_orders(query, status=None, page=1):
         logger.error(f"Ошибка получения заказов: {e}")
         await safe_edit_message(
             query,
-            f"❌ Ошибка: {e}",
+            f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
@@ -455,7 +485,8 @@ async def show_orders_history(query, page=1):
             )
             return
 
-        text = f"📊 *История заказов (БД)*\n\n"
+        text = f"📊 *История заказов (БД)*\n"
+        text += f"_Обновлено: {datetime.now().strftime('%H:%M')}_\n\n"
         text += f"Страница {page} из {total_pages}\n"
         text += f"Всего заказов: {total_count}\n\n"
 
@@ -478,8 +509,8 @@ async def show_orders_history(query, page=1):
 
             text += (
                 f"{status_emoji} `{oid}` — {total_price}₽\n"
-                f"   Статус: {status}/{substatus}\n"
-                f"   Дата: {date}\n\n"
+                f"   Статус: {escape_md(status)}/{escape_md(substatus)}\n"
+                f"   Дата: {escape_md(date)}\n\n"
             )
             keyboard.append([
                 InlineKeyboardButton(
@@ -508,7 +539,7 @@ async def show_orders_history(query, page=1):
         logger.error(f"Ошибка получения истории заказов: {e}")
         await safe_edit_message(
             query,
-            f"❌ Ошибка: {e}",
+            f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
@@ -530,20 +561,23 @@ async def show_order_detail(query, order_id):
 
         items_text = ""
         for item in items:
-            items_text += f"  • {item.get('offerName', '?')} × {item.get('count', 1)} — {item.get('buyerPrice', 0)}₽\n"
+            items_text += f"  • {escape_md(item.get('offerName', '?'))} × {item.get('count', 1)} — {item.get('buyerPrice', 0)}₽\n"
 
+        buyer_full = f"{buyer.get('firstName', '')} {buyer.get('lastName', '')}".strip()
         text = (
             f"📦 *Заказ №{order_id}*\n\n"
             f"💰 Сумма: {order.get('buyerTotal', 0)}₽\n"
-            f"📊 Статус: `{order.get('status', '?')}/{order.get('substatus', '?')}`\n"
-            f"📅 Создан: {order.get('creationDate', '?')}\n"
-            f"💳 Оплата: {order.get('paymentType', '?')}\n"
-            f"🚚 Доставка: {delivery.get('type', '?')}\n\n"
-            f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
+            f"📊 Статус: `{escape_md(order.get('status', '?'))}/{escape_md(order.get('substatus', '?'))}`\n"
+            f"📅 Создан: {escape_md(order.get('creationDate', '?'))}\n"
+            f"💳 Оплата: {escape_md(order.get('paymentType', '?'))}\n"
+            f"🚚 Доставка: {escape_md(delivery.get('type', '?'))}\n\n"
+            f"👤 Покупатель: {escape_md(buyer_full)}\n\n"
             f"🛒 *Товары:*\n{items_text}"
         )
 
-        # Сохраняем заказ в БД
+        # Сохраняем/обновляем заказ в БД (не перезаписываем our_status, если уже установлен)
+        db_order = db.get_order_from_db(order_id) or {}
+        our_status = db_order.get("our_status", "НОВЫЙ")
         try:
             buyer_name = f"{buyer.get('firstName', '')} {buyer.get('lastName', '')}".strip()
             product_name = items[0].get("offerName", "") if items else ""
@@ -551,7 +585,7 @@ async def show_order_detail(query, order_id):
                 order_id=order_id,
                 status=order.get("status", "PROCESSING"),
                 substatus=order.get("substatus", ""),
-                our_status="НОВЫЙ",
+                our_status=our_status,
                 product=product_name,
                 buyer_name=buyer_name,
                 total=order.get("buyerTotal", 0),
@@ -560,47 +594,38 @@ async def show_order_detail(query, order_id):
             )
         except Exception as e:
             logger.warning(f"Ошибка сохранения заказа {order_id} в БД: {e}")
-
-        keyboard = []
         status = order.get("status", "")
         substatus = order.get("substatus", "")
 
-        if status == "PROCESSING":
-            # Кнопки обработки заказа
+        keyboard = []
+        if status == "PROCESSING" and our_status == "НОВЫЙ":
             keyboard.append([
-                InlineKeyboardButton(
-                    "🔑 Выдать аккаунт (авто)",
-                    callback_data=f"auto_deliver_{order_id}",
-                )
+                InlineKeyboardButton("🔑 Выдать аккаунт (авто)", callback_data=f"auto_deliver_{order_id}"),
             ])
             keyboard.append([
-                InlineKeyboardButton(
-                    "👨‍💼 Ручная обработка (менеджер)",
-                    callback_data=f"manual_process_{order_id}",
-                )
+                InlineKeyboardButton("👨‍💼 Ручная обработка (менеджер)", callback_data=f"manual_process_{order_id}"),
             ])
             keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Подтвердить передачу",
-                    callback_data=f"order_confirm_{order_id}",
-                )
+                InlineKeyboardButton("✅ Подтвердить передачу", callback_data=f"order_confirm_{order_id}"),
             ])
-            # Кнопка для принудительного обновления статуса (если заказ в READY_TO_SHIP)
-            if substatus == "READY_TO_SHIP":
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "🔄 Обновить статус до DELIVERED",
-                        callback_data=f"force_delivered_{order_id}",
-                    )
-                ])
 
-        # Заказ уже передан в доставку — даём возможность перевести в DELIVERED
+        # Этап «Отправить»: заказ отгружен (READY_TO_SHIP + boxes), переводим в DELIVERY
+        if status == "PROCESSING" and (our_status == "ОТГРУЖЕН" or substatus == "READY_TO_SHIP"):
+            keyboard.append([
+                InlineKeyboardButton("📤 Отправить", callback_data=f"step_delivery_{order_id}"),
+            ])
         if status == "DELIVERY":
             keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Перевести в DELIVERED (доставлен)",
-                    callback_data=f"force_delivered_{order_id}",
-                )
+                InlineKeyboardButton("✅ Доставлен", callback_data=f"step_delivered_{order_id}"),
+            ])
+        if status == "DELIVERED":
+            keyboard.append([
+                InlineKeyboardButton("🏁 Заказ завершён", callback_data=f"order_detail_{order_id}"),
+            ])
+
+        if status == "PROCESSING" and substatus == "READY_TO_SHIP" and our_status != "ОТГРУЖЕН":
+            keyboard.append([
+                InlineKeyboardButton("🔄 Обновить статус до DELIVERED", callback_data=f"force_delivered_{order_id}"),
             ])
 
         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")])
@@ -615,7 +640,7 @@ async def show_order_detail(query, order_id):
         logger.error(f"Ошибка получения заказа {order_id}: {e}")
         await safe_edit_message(
             query,
-            f"❌ Ошибка: {e}",
+            f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
@@ -647,7 +672,7 @@ def _do_deliver(api, order_id, order=None):
     if not account:
         account = get_available_account()  # любой свободный
     if not account:
-        return False, f"Склад пуст! Нет аккаунтов для «{product_name}»", None
+        return False, f"Склад пуст! Нет аккаунтов для «{escape_md(product_name)}»", None
 
     # 2. Отправляем данные покупателю в чат Маркета
     slip = build_account_slip(account, product_name)
@@ -664,54 +689,43 @@ def _do_deliver(api, order_id, order=None):
     # 3. Помечаем аккаунт использованным
     mark_account_used(account["login"])
 
-    # 4. Полная цепочка DBS: READY_TO_SHIP → boxes → DELIVERY → DELIVERED
-    status_results = api.deliver_digital_order(order_id)
-    status_report = "\n".join(f"  • {s}: {r}" for s, r in status_results)
-    
-    # 5. Сохраняем заказ в БД с обновленным статусом
+    # 4. Только отгрузка: READY_TO_SHIP + boxes. Не переводим в DELIVERY/DELIVERED (кнопки «Отправить» / «Доставлен» — отдельно).
+    status_results = api.ship_ready_and_boxes_only(order_id)
+    status_report = "\n".join(f"  • {escape_md(s)}: {escape_md(r)}" for s, r in status_results)
+
+    # 5. Сохраняем заказ в БД: наш статус «ОТГРУЖЕН» (админ потом нажмёт «Отправить» → «Доставлен»).
     try:
+        order_data = api.get_order(order_id)
+        order = order_data.get("order", {})
         buyer = order.get("buyer", {})
         buyer_name = f"{buyer.get('firstName', '')} {buyer.get('lastName', '')}".strip()
-        final_status = "DELIVERED" if (any(step == "DELIVERED" and result == "OK" for step, result in status_results) or 
-                                       any(step == "DELIVERED" and "уже" in result for step, result in status_results)) else order.get("status", "PROCESSING")
         db.save_order(
             order_id=order_id,
-            status=final_status,
+            status=order.get("status", "PROCESSING"),
             substatus=order.get("substatus", ""),
-        our_status="ВЫДАН",
+            our_status="ОТГРУЖЕН",
             product=product_name,
             buyer_name=buyer_name,
             total=order.get("buyerTotal", 0),
             created_at=order.get("creationDate", ""),
-            delivered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        account_login=account["login"],
+            delivered_at="",
+            account_login=account["login"],
             delivery_type=order.get("delivery", {}).get("type", ""),
         )
     except Exception as e:
         logger.warning(f"Ошибка сохранения заказа {order_id} в БД после выдачи: {e}")
-
-    # Проверяем, дошли ли до DELIVERED
-    delivered_ok = any(
-        step == "DELIVERED" and result == "OK"
-        for step, result in status_results
-    )
-    already_delivered = any(
-        step == "DELIVERED" and "уже" in result
-        for step, result in status_results
-    )
 
     if chat_sent:
         chat_status = "✅ Отправлено в чат покупателю"
     else:
         chat_status = "⚠️ Чат недоступен — данные только в Telegram"
 
-    delivery_emoji = "✅" if (delivered_ok or already_delivered) else "⏳"
     report = (
         f"📦 Заказ: {order_id}\n"
-        f"🛒 Товар: {product_name}\n"
-        f"🔑 Логин: {account['login']}\n"
+        f"🛒 Товар: {escape_md(product_name)}\n"
+        f"🔑 Логин: `{escape_md(account['login'])}`\n"
         f"📨 {chat_status}\n"
-        f"{delivery_emoji} Доставка: {'DELIVERED' if (delivered_ok or already_delivered) else 'в процессе'}\n\n"
+        f"📤 Статус: *Отгружен* — нажмите «Отправить», затем «Доставлен» под заказом.\n\n"
         f"📊 Обработка:\n{status_report}"
     )
     return True, report, account
@@ -738,7 +752,7 @@ async def auto_deliver_account(query, order_id):
 
         await safe_edit_message(
             query,
-            f"✅ *Аккаунт выдан и заказ доставлен!*\n\n{report}",
+            f"✅ *Аккаунт выдан, заказ отгружен*\n\n{report}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
@@ -760,7 +774,7 @@ async def auto_deliver_account(query, order_id):
         logger.error(f"Ошибка авто-выдачи для заказа {order_id}: {e}")
         await safe_edit_message(
             query,
-            f"❌ Ошибка: {e}\n\nПопробуйте ручную обработку.",
+            f"❌ Ошибка: `{escape_md(str(e)[:400])}`\n\nПопробуйте ручную обработку.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("👨‍💼 Ручная обработка", callback_data=f"manual_process_{order_id}")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
@@ -790,7 +804,7 @@ async def manual_process_order(query, order_id, context):
             query,
             f"👨‍💼 *Ручная обработка заказа*\n\n"
             f"📦 Заказ: `{order_id}`\n"
-            f"🛒 Товар: {product_name}\n\n"
+            f"🛒 Товар: {escape_md(product_name)}\n\n"
             f"📝 *Введите данные аккаунта в формате:*\n\n"
             f"`логин ; пароль ; 2fa`\n\n"
             f"*Примеры:*\n"
@@ -808,7 +822,7 @@ async def manual_process_order(query, order_id, context):
         logger.error(f"Ошибка ручной обработки {order_id}: {e}")
         await safe_edit_message(
             query,
-            f"❌ Ошибка: {e}",
+            f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
@@ -817,6 +831,15 @@ async def manual_process_order(query, order_id, context):
 
 # ─── Принудительное обновление статуса до DELIVERED ───────────────────
 
+def _do_force_delivered_sync(order_id):
+    """Синхронно: цепочка DELIVERED через API. Возвращает (status_results, order_dict)."""
+    with YandexMarketAPI() as api:
+        status_results = api.deliver_digital_order(order_id)
+        order_data = api.get_order(order_id)
+        order = order_data.get("order", {})
+        return status_results, order
+
+
 async def force_update_to_delivered(query, order_id):
     """Принудительно обновить статус заказа до DELIVERED."""
     try:
@@ -824,62 +847,76 @@ async def force_update_to_delivered(query, order_id):
             query,
             f"🔄 *Обновление статуса заказа*\n\n"
             f"📦 Заказ: `{order_id}`\n"
-            f"⏳ Пытаюсь перевести в DELIVERED...",
+            f"⏳ Пытаюсь перевести в DELIVERED\\.\\.\\.\n\n"
+            f"_Ждите до 90 сек\\. При зависании нажмите «Повторить»_",
         )
 
-        with YandexMarketAPI() as api:
-            # Пытаемся перевести заказ в DELIVERED
-            status_results = api.deliver_digital_order(order_id)
-            status_report = "\n".join(f"  • {s}: {r}" for s, r in status_results)
-
-            # Проверяем текущий статус
-            order_data = api.get_order(order_id)
-            order = order_data.get("order", {})
-            final_status = order.get("status", "")
-            final_sub = order.get("substatus", "")
-
-            # Проверяем успешность
-            delivered_ok = any(
-                step == "DELIVERED" and result == "OK"
-                for step, result in status_results
+        # Тяжёлые вызовы API — в потоке с таймаутом, чтобы не зависать
+        try:
+            status_results, order = await asyncio.wait_for(
+                asyncio.to_thread(_do_force_delivered_sync, order_id),
+                timeout=90.0,
             )
-            already_delivered = any(
-                step == "DELIVERED" and "уже" in result
-                for step, result in status_results
-            )
-
-            if final_status == "DELIVERED" or delivered_ok or already_delivered:
-                result_text = (
-                    f"✅ *Статус обновлён!*\n\n"
-                    f"📦 Заказ: `{order_id}`\n"
-                    f"📊 Статус: `DELIVERED`\n\n"
-                    f"📋 *Детали обработки:*\n{status_report}"
-                )
-            else:
-                result_text = (
-                    f"⚠️ *Статус не обновлён*\n\n"
-                    f"📦 Заказ: `{order_id}`\n"
-                    f"📊 Текущий статус: `{final_status}/{final_sub}`\n\n"
-                    f"📋 *Попытки обновления:*\n{status_report}\n\n"
-                    f"Попробуйте ещё раз или обратитесь в поддержку."
-                )
-
+        except asyncio.TimeoutError:
             await safe_edit_message(
                 query,
-                result_text,
+                f"⏱ *Превышено время ожидания*\n\n"
+                f"📦 Заказ: `{order_id}`\n\n"
+                f"API Яндекс Маркета не ответил за 90 сек\\.\n"
+                f"Проверьте заказ в личном кабинете или нажмите «Повторить»\\.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                     [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                     [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
                 ]),
             )
+            return
+
+        status_report = "\n".join(f"  • {escape_md(s)}: {escape_md(r)}" for s, r in status_results)
+        final_status = order.get("status", "")
+        final_sub = order.get("substatus", "")
+
+        delivered_ok = any(
+            step == "DELIVERED" and result == "OK"
+            for step, result in status_results
+        )
+        already_delivered = any(
+            step == "DELIVERED" and "уже" in result
+            for step, result in status_results
+        )
+
+        if final_status == "DELIVERED" or delivered_ok or already_delivered:
+            result_text = (
+                f"✅ *Статус обновлён!*\n\n"
+                f"📦 Заказ: `{order_id}`\n"
+                f"📊 Статус: `DELIVERED`\n\n"
+                f"📋 *Детали обработки:*\n{status_report}"
+            )
+        else:
+            result_text = (
+                f"⚠️ *Статус не обновлён*\n\n"
+                f"📦 Заказ: `{order_id}`\n"
+                f"📊 Текущий статус: `{escape_md(final_status)}/{escape_md(final_sub)}`\n\n"
+                f"📋 *Попытки обновления:*\n{status_report}\n\n"
+                f"Попробуйте ещё раз или обратитесь в поддержку."
+            )
+
+        await safe_edit_message(
+            query,
+            result_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+            ]),
+        )
 
     except Exception as e:
         logger.error(f"Ошибка принудительного обновления статуса заказа {order_id}: {e}")
         await safe_edit_message(
             query,
             f"❌ *Ошибка обновления статуса*\n\n"
-            f"Ошибка: `{str(e)[:200]}`\n\n"
+            f"Ошибка: `{escape_md(str(e)[:200])}`\n\n"
             f"Попробуйте ещё раз.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
@@ -887,6 +924,70 @@ async def force_update_to_delivered(query, order_id):
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
             ]),
         )
+
+
+# ─── Пошаговая смена статусов (Отправить / Доставлен) ─────────────────
+
+async def step_delivery_handler(query, order_id):
+    """Перевести заказ в статус «Отправлен» (DELIVERY)."""
+    try:
+        await query.answer()
+        with YandexMarketAPI() as api:
+            ok, msg = api.set_status_to_delivery(order_id)
+        if ok:
+            db.update_order_status(order_id, our_status="ОТПРАВЛЕН")
+            await safe_edit_message(
+                query,
+                f"✅ *Отправлен*\n\n📦 Заказ: `{order_id}`\nСтатус в Маркете: DELIVERY.\n\nНажмите «Доставлен», когда заказ будет получен клиентом.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Доставлен", callback_data=f"step_delivered_{order_id}")],
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                ]),
+            )
+        else:
+            await safe_edit_message(
+                query,
+                f"❌ Не удалось перевести в «Отправлен»\n\n📦 Заказ: `{order_id}`\n`{escape_md(msg[:200])}`",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                ]),
+            )
+    except Exception as e:
+        logger.error(f"Ошибка step_delivery {order_id}: {e}")
+        await query.answer(f"Ошибка: {str(e)[:50]}", show_alert=True)
+
+
+async def step_delivered_handler(query, order_id):
+    """Перевести заказ в статус «Доставлен» (DELIVERED) — заказ завершён."""
+    try:
+        await query.answer()
+        with YandexMarketAPI() as api:
+            ok, msg = api.set_status_to_delivered(order_id)
+        if ok:
+            delivered_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            db.update_order_status(order_id, our_status="ЗАВЕРШЕН", status="DELIVERED", delivered_at=delivered_at)
+            await safe_edit_message(
+                query,
+                f"✅ *Заказ доставлен и завершён*\n\n📦 Заказ: `{order_id}`\nСтатус в Маркете: DELIVERED. Заказ не отображается в заявках.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                ]),
+            )
+        else:
+            await safe_edit_message(
+                query,
+                f"❌ Не удалось перевести в «Доставлен»\n\n📦 Заказ: `{order_id}`\n`{escape_md(msg[:200])}`",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                ]),
+            )
+    except Exception as e:
+        logger.error(f"Ошибка step_delivered {order_id}: {e}")
+        await query.answer(f"Ошибка: {str(e)[:50]}", show_alert=True)
 
 
 # ─── Подтверждение заказа ────────────────────────────────────────────
@@ -974,7 +1075,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: `{escape_md(str(e)[:400])}`", parse_mode="Markdown")
 
 
 # ─── Синхронизация остатков ──────────────────────────────────────────
@@ -1045,7 +1146,7 @@ async def sync_stock_handler(query):
             for sku, count in sorted(stock_counts.items()):
                 label = "без привязки" if sku == STOCK_KEY_NO_SKU else f"SKU `{sku}`"
                 text += f"  • {label}: {count} шт.\n"
-            text += f"\n⚠️ *Ошибка API:*\n`{error_details[:300]}`\n\n"
+            text += f"\n⚠️ *Ошибка API:*\n`{escape_md(error_details[:300])}`\n\n"
             text += "Проверьте:\n"
             text += "• Права API-ключа на обновление остатков\n"
             text += "• Правильность SKU товаров\n"
@@ -1065,7 +1166,7 @@ async def sync_stock_handler(query):
         await safe_edit_message(
             query,
             f"❌ *Ошибка синхронизации*\n\n"
-            f"Ошибка: `{str(e)[:200]}`\n\n"
+            f"Ошибка: `{escape_md(str(e)[:200])}`\n\n"
             f"Проверьте права API-ключа и настройки товаров.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
@@ -1109,7 +1210,7 @@ async def show_stock_info(query):
             for acc in accounts:
                 if not acc.get("used", False):
                     product = acc.get("product") or acc.get("sku") or "—"
-                    text += f"  • `{acc['login']}` — {product}\n"
+                    text += f"  • `{escape_md(acc['login'])}` — {escape_md(product)}\n"
 
         await safe_edit_message(
             query,
@@ -1119,7 +1220,7 @@ async def show_stock_info(query):
             ]),
         )
     except Exception as e:
-        await safe_edit_message(query, f"❌ Ошибка чтения склада: {e}")
+        await safe_edit_message(query, f"❌ Ошибка чтения склада: `{escape_md(str(e)[:400])}`")
 
 
 # ─── Добавление аккаунтов через бота ─────────────────────────────────
@@ -1245,13 +1346,13 @@ def _parse_and_add_accounts(text):
     if added:
         report += f"✅ *Добавлено: {len(added)}*\n"
         for login in added:
-            report += f"  • `{login}`\n"
+            report += f"  • `{escape_md(login)}`\n"
         report += "\n"
 
     if errors:
         report += f"⚠️ *Ошибки: {len(errors)}*\n"
         for err in errors:
-            report += f"  • {err}\n"
+            report += f"  • {escape_md(err)}\n"
         report += "\n"
 
     report += f"📦 Всего свободных на складе: *{free}*"
@@ -1290,7 +1391,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     [InlineKeyboardButton("❌ Отмена", callback_data=f"order_detail_{order_id}")],
                 ]),
             )
-        return
+            return
 
         login = parts[0]
         password = parts[1]
@@ -1316,9 +1417,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # Отправляем клиенту
                 api.send_message_to_buyer(order_id, slip)
 
-                # Обновляем статус заказа до DELIVERED
+                # Сразу после передачи данных: автоматически подтверждаем передачу в доставку и переводим в DELIVERED
+                # Цепочка: READY_TO_SHIP (подтвердить передачу в доставку) → boxes → DELIVERY → DELIVERED
                 status_results = api.deliver_digital_order(order_id)
-                status_report = "\n".join(f"  • {s}: {r}" for s, r in status_results)
+                status_report = "\n".join(f"  • {escape_md(s)}: {escape_md(r)}" for s, r in status_results)
                 
                 # Сохраняем заказ в БД
                 try:
@@ -1358,8 +1460,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 success_text = (
                     f"✅ *Данные отправлены клиенту!*\n\n"
                     f"📦 Заказ: `{order_id}`\n"
-                    f"🛒 Товар: {product_name}\n"
-                    f"🔑 Логин: `{login}`\n"
+                    f"🛒 Товар: {escape_md(product_name)}\n"
+                    f"🔑 Логин: `{escape_md(login)}`\n"
                     f"📨 Сообщение отправлено в чат покупателю\n"
                     f"{delivery_status}\n\n"
                     f"📊 Обработка:\n{status_report}"
@@ -1394,7 +1496,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.error(f"Ошибка отправки данных клиенту для заказа {order_id}: {e}")
             await update.message.reply_text(
                 f"❌ *Ошибка отправки данных*\n\n"
-                f"Ошибка: `{str(e)[:200]}`\n\n"
+                f"Ошибка: `{escape_md(str(e)[:200])}`\n\n"
                 f"Попробуйте ещё раз или используйте автоматическую выдачу.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
@@ -1444,7 +1546,7 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                 buyer = order.get("buyer", {})
                 items_text = ""
                 for item in items:
-                    items_text += f"  • {item.get('offerName', '?')} × {item.get('count', 1)} — {item.get('buyerPrice', 0)}₽\n"
+                    items_text += f"  • {escape_md(item.get('offerName', '?'))} × {item.get('count', 1)} — {item.get('buyerPrice', 0)}₽\n"
 
                 product_name = items[0].get("offerName", "Товар") if items else "?"
 
@@ -1468,12 +1570,13 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"Ошибка сохранения нового заказа {oid} в БД: {e}")
 
                 # ═══════ УВЕДОМЛЕНИЕ О НОВОМ ЗАКАЗЕ В ГРУППУ ═══════
+                buyer_display = f"{buyer.get('firstName', '')} {buyer.get('lastName', '')}".strip()
                 new_order_text = (
                     f"🔔 *НОВЫЙ ЗАКАЗ — ТРЕБУЕТ ОБРАБОТКИ!*\n\n"
                     f"📦 Заказ №`{oid}`\n"
                     f"💰 Сумма: {order.get('buyerTotal', 0)}₽\n"
-                    f"📅 Дата: {order.get('creationDate', '?')}\n"
-                    f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
+                    f"📅 Дата: {escape_md(order.get('creationDate', '?'))}\n"
+                    f"👤 Покупатель: {escape_md(buyer_display)}\n\n"
                     f"🛒 *Товары:*\n{items_text}\n"
                     f"Выберите способ обработки:"
                 )
@@ -1515,13 +1618,13 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                     success_text = (
                         f"✅ *АВТОВЫДАЧА — заказ обработан!*\n\n"
                         f"{report}\n\n"
-                        f"👤 Покупатель: {buyer.get('firstName', '')} {buyer.get('lastName', '')}\n\n"
+                        f"👤 Покупатель: {escape_md(buyer_display)}\n\n"
                         f"🔑 *Данные аккаунта (копия):*\n"
-                        f"Логин: `{account['login']}`\n"
-                        f"Пароль: `{account['password']}`\n"
+                        f"Логин: `{escape_md(account['login'])}`\n"
+                        f"Пароль: `{escape_md(account['password'])}`\n"
                     )
                     if account.get("2fa"):
-                        success_text += f"2FA: `{account['2fa']}`\n"
+                        success_text += f"2FA: `{escape_md(account['2fa'])}`\n"
 
                     success_kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton(
@@ -1610,6 +1713,16 @@ def main():
 
     # Фоновая проверка новых заказов — каждые 60 секунд
     app.job_queue.run_repeating(poll_new_orders, interval=60, first=5)
+
+    # Убираем кнопку «Статус магазина» (если задана в BotFather) — сбрасываем на стандартное меню
+    async def clear_menu_button(_application):
+        try:
+            await _application.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+            logger.info("Кнопка меню бота сброшена (убрана «Статус магазина»)")
+        except Exception as e:
+            logger.warning(f"Не удалось сбросить кнопку меню: {e}")
+
+    app.post_init = clear_menu_button
 
     print("✅ Бот запущен! Polling заказов каждые 60 сек.")
     print(f"👤 Админы: {', '.join(str(a) for a in ADMIN_IDS)}")

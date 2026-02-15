@@ -296,6 +296,11 @@ class YandexMarketAPI:
                 log.warning(f"Не удалось проверить текущий статус заказа {order_id}: {e}, продолжаем обновление")
 
         url = f"/campaigns/{self.campaign_id}/orders/{order_id}/status"
+        # DBS требует субстатус для DELIVERY/DELIVERED — без него API возвращает 400 STATUS_NOT_ALLOWED
+        if status == "DELIVERY" and not substatus:
+            substatus = "DELIVERY_SERVICE_RECEIVED"
+        if status == "DELIVERED" and not substatus:
+            substatus = "DELIVERY_SERVICE_DELIVERED"
         order_body = {"status": status}
         if substatus:
             order_body["substatus"] = substatus
@@ -374,6 +379,114 @@ class YandexMarketAPI:
         self._raise_on_error(response, f"Boxes заказа {order_id}")
         return response.json()
 
+    # ─── Пошаговые переходы статусов (для кнопок админки) ───────────
+
+    def ship_ready_and_boxes_only(self, order_id):
+        """
+        Только шаги 1–3: READY_TO_SHIP + boxes. Не переводит в DELIVERY/DELIVERED.
+        Возвращает список (step, result). После этого наш статус «Отгружен».
+        """
+        results = []
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        cur_sub = order.get("substatus", "")
+
+        if cur_status == "PROCESSING" and cur_sub in ("STARTED", ""):
+            try:
+                self.update_order_status(order_id, "PROCESSING", "READY_TO_SHIP")
+                results.append(("READY_TO_SHIP", "OK"))
+                time.sleep(1)
+            except Exception as e:
+                results.append(("READY_TO_SHIP", str(e)))
+                return results
+        elif cur_status == "PROCESSING" and cur_sub == "READY_TO_SHIP":
+            results.append(("READY_TO_SHIP", "уже в этом статусе"))
+        elif cur_status in ("DELIVERY", "DELIVERED"):
+            results.append(("READY_TO_SHIP", f"пропуск — уже {cur_status}"))
+            return results
+
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        delivery = order.get("delivery", {})
+        shipments = delivery.get("shipments", [])
+        items = order.get("items", [])
+
+        if cur_status in ("DELIVERY", "DELIVERED"):
+            results.append(("ОТГРУЗКА", "пропуск"))
+            return results
+        if shipments:
+            shipment_id = shipments[0].get("id")
+            if shipment_id:
+                try:
+                    self.set_order_boxes(order_id, shipment_id, items)
+                    results.append(("ОТГРУЗКА", "OK"))
+                except Exception as e:
+                    if "already" in str(e).lower() or "400" in str(e):
+                        results.append(("ОТГРУЗКА", "уже подтверждена"))
+                    else:
+                        results.append(("ОТГРУЗКА", str(e)[:80]))
+            else:
+                results.append(("ОТГРУЗКА", "нет shipment ID"))
+        else:
+            if delivery.get("type") == "DIGITAL":
+                results.append(("ОТГРУЗКА", "пропуск — DIGITAL без shipments"))
+            else:
+                results.append(("ОТГРУЗКА", "нет shipments"))
+        return results
+
+    def set_status_to_delivery(self, order_id):
+        """
+        Перевести заказ в DELIVERY (только если текущий READY_TO_SHIP или уже отгружен).
+        Возвращает (ok: bool, message: str).
+        """
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        cur_sub = order.get("substatus", "")
+        if cur_status == "DELIVERY":
+            return True, "уже в статусе Отправлен"
+        if cur_status == "DELIVERED":
+            return True, "заказ уже доставлен"
+        if cur_status != "PROCESSING" or cur_sub != "READY_TO_SHIP":
+            try:
+                self.update_order_status(order_id, "PROCESSING", "READY_TO_SHIP")
+                time.sleep(1)
+                order_data = self.get_order(order_id)
+                order = order_data.get("order", {})
+                cur_status, cur_sub = order.get("status", ""), order.get("substatus", "")
+            except Exception as e:
+                return False, f"READY_TO_SHIP: {str(e)[:80]}"
+        if cur_status == "PROCESSING" and cur_sub == "READY_TO_SHIP":
+            try:
+                self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED")
+                return True, "OK"
+            except Exception as e:
+                return False, str(e)[:120]
+        return False, f"текущий статус {cur_status}/{cur_sub}"
+
+    def set_status_to_delivered(self, order_id):
+        """
+        Перевести заказ в DELIVERED (только из DELIVERY).
+        Возвращает (ok: bool, message: str).
+        """
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        cur_status = order.get("status", "")
+        if cur_status == "DELIVERED":
+            return True, "уже доставлен"
+        if cur_status != "DELIVERY":
+            return False, f"нужен статус Отправлен, текущий: {cur_status}"
+        try:
+            self.update_order_status(
+                order_id, "DELIVERED", "DELIVERY_SERVICE_DELIVERED",
+                real_delivery_date=date.today().isoformat(),
+            )
+            return True, "OK"
+        except Exception as e:
+            return False, str(e)[:120]
+
     # ─── Полная цепочка доставки (DBS, цифровой товар) ───────────────
 
     def deliver_digital_order(self, order_id):
@@ -405,7 +518,7 @@ class YandexMarketAPI:
             except Exception as e:
                 results.append(("READY_TO_SHIP", str(e)))
                 return results
-            time.sleep(2)
+            time.sleep(1)
         elif cur_status == "PROCESSING" and cur_sub == "READY_TO_SHIP":
             results.append(("READY_TO_SHIP", "уже в этом статусе"))
         elif cur_status in ("DELIVERY", "DELIVERED"):
@@ -453,7 +566,7 @@ class YandexMarketAPI:
                 results.append(("ОТГРУЗКА", "нет shipments"))
                 log.warning(f"Заказ {order_id}: нет shipments (тип доставки: {delivery_type})")
 
-        time.sleep(5)  # Увеличиваем время ожидания после boxes
+        time.sleep(1)
 
         # ── Шаг 4: → DELIVERY ────────────────────────────────────
         # Проверяем статус и переходим в DELIVERY только если нужно
@@ -476,7 +589,7 @@ class YandexMarketAPI:
                 try:
                     self.update_order_status(order_id, "PROCESSING", "READY_TO_SHIP", check_current=True)
                     results.append(("DELIVERY", "сначала выставлен READY_TO_SHIP"))
-                    time.sleep(2)
+                    time.sleep(1)
                     order_data = self.get_order(order_id)
                     order = order_data.get("order", {})
                     cur_status = order.get("status", "")
@@ -488,7 +601,7 @@ class YandexMarketAPI:
             if cur_status == "PROCESSING" and cur_sub == "READY_TO_SHIP":
                 try:
                     self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED", check_current=True)
-                    time.sleep(3)  # Даем время API обработать
+                    time.sleep(1)
                     check_data = self.get_order(order_id)
                     check_order = check_data.get("order", {})
                     if check_order.get("status") == "DELIVERY":
@@ -520,7 +633,7 @@ class YandexMarketAPI:
             # Если статус не PROCESSING и не DELIVERY/DELIVERED, пропускаем DELIVERY
             results.append(("DELIVERY", f"пропуск — статус {cur_status}/{cur_sub}, попробуем DELIVERED"))
 
-        time.sleep(2)
+        time.sleep(1)
 
         # ── Шаг 5: → DELIVERED ────────────────────────────────────
         # Для DIGITAL товаров делаем одну попытку перевода в DELIVERED
@@ -542,7 +655,7 @@ class YandexMarketAPI:
                     order_id, "DELIVERED", "DELIVERY_SERVICE_DELIVERED",
                     check_current=True, real_delivery_date=date.today().isoformat()
                 )
-                time.sleep(3)  # Даем время API обработать
+                time.sleep(1)  # Даем время API обработать
                 # Проверяем результат
                 check_data = self.get_order(order_id)
                 if check_data.get("order", {}).get("status") == "DELIVERED":
@@ -570,7 +683,7 @@ class YandexMarketAPI:
                 if cur_sub == "READY_TO_SHIP":
                     try:
                         self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED", check_current=True)
-                        time.sleep(3)
+                        time.sleep(1)
                         check_data = self.get_order(order_id)
                         if check_data.get("order", {}).get("status") == "DELIVERY":
                             # Теперь пробуем DELIVERED
@@ -578,7 +691,7 @@ class YandexMarketAPI:
                                 order_id, "DELIVERED", "DELIVERY_SERVICE_DELIVERED",
                                 check_current=True, real_delivery_date=date.today().isoformat()
                             )
-                            time.sleep(3)
+                            time.sleep(1)
                             check_data2 = self.get_order(order_id)
                             if check_data2.get("order", {}).get("status") == "DELIVERED":
                                 results.append(("DELIVERED", "OK (через DELIVERY)"))
@@ -591,7 +704,7 @@ class YandexMarketAPI:
                                 order_id, "DELIVERED", "DELIVERY_SERVICE_DELIVERED",
                                 check_current=True, real_delivery_date=date.today().isoformat()
                             )
-                            time.sleep(3)
+                            time.sleep(1)
                             check_data3 = self.get_order(order_id)
                             if check_data3.get("order", {}).get("status") == "DELIVERED":
                                 results.append(("DELIVERED", "OK (напрямую из PROCESSING)"))
@@ -625,13 +738,13 @@ class YandexMarketAPI:
         order_data = self.get_order(order_id)
         final_status = order_data.get("order", {}).get("status", "")
         if final_status == "DELIVERY":
-            time.sleep(2)
+            time.sleep(1)
             try:
                 self.update_order_status(
                     order_id, "DELIVERED", "DELIVERY_SERVICE_DELIVERED",
                     check_current=True, real_delivery_date=date.today().isoformat()
                 )
-                time.sleep(2)
+                time.sleep(1)
                 check = self.get_order(order_id)
                 if check.get("order", {}).get("status") == "DELIVERED":
                     results.append(("DELIVERED (повтор)", "OK"))
