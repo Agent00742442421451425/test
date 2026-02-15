@@ -438,8 +438,8 @@ class YandexMarketAPI:
 
     def set_status_to_delivery(self, order_id):
         """
-        Перевести заказ в DELIVERY (только если текущий READY_TO_SHIP или уже отгружен).
-        Возвращает (ok: bool, message: str).
+        Перевести заказ в DELIVERY. Обязательно: READY_TO_SHIP → boxes (если есть shipments) → DELIVERY.
+        Без подтверждения boxes API возвращает 400 STATUS_NOT_ALLOWED.
         """
         order_data = self.get_order(order_id)
         order = order_data.get("order", {})
@@ -458,13 +458,32 @@ class YandexMarketAPI:
                 cur_status, cur_sub = order.get("status", ""), order.get("substatus", "")
             except Exception as e:
                 return False, f"READY_TO_SHIP: {str(e)[:80]}"
-        if cur_status == "PROCESSING" and cur_sub == "READY_TO_SHIP":
-            try:
-                self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED")
-                return True, "OK"
-            except Exception as e:
-                return False, str(e)[:120]
-        return False, f"текущий статус {cur_status}/{cur_sub}"
+        if cur_status != "PROCESSING" or cur_sub != "READY_TO_SHIP":
+            return False, f"текущий статус {cur_status}/{cur_sub}"
+
+        # Обязательный шаг перед DELIVERY: подтвердить отгрузку (boxes). Без этого API даёт 400 STATUS_NOT_ALLOWED.
+        order_data = self.get_order(order_id)
+        order = order_data.get("order", {})
+        delivery = order.get("delivery", {})
+        shipments = delivery.get("shipments", [])
+        items = order.get("items", [])
+        if shipments:
+            shipment_id = shipments[0].get("id")
+            if shipment_id:
+                try:
+                    self.set_order_boxes(order_id, shipment_id, items)
+                    time.sleep(1)
+                except Exception as e:
+                    if "already" in str(e).lower() or "already confirmed" in str(e).lower():
+                        pass
+                    else:
+                        return False, f"boxes: {str(e)[:80]}"
+
+        try:
+            self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED")
+            return True, "OK"
+        except Exception as e:
+            return False, str(e)[:120]
 
     def set_status_to_delivered(self, order_id):
         """
