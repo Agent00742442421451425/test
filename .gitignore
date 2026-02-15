@@ -4,6 +4,11 @@
 # Локальные данные (создаются при первом запуске)
 orders.json
 
+# Excel — не используем, только JSON или PostgreSQL
+*.xlsx
+*.xls
+database.xlsx
+
 # Python
 __pycache__/
 *.py[cod]
