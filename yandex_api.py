@@ -823,11 +823,10 @@ class YandexMarketAPI:
     def send_chat_message(self, chat_id, message_text):
         """
         Отправить текстовое сообщение в чат покупателю.
-        POST /businesses/{businessId}/chats/message
-
-        API Маркета принимает только application/json (не x-www-form-urlencoded).
+        POST /v2/businesses/{businessId}/chats/message (документация требует v2).
+        API Маркета принимает только application/json.
         """
-        url = f"/businesses/{self.business_id}/chats/message"
+        url = f"/v2/businesses/{self.business_id}/chats/message"
         params = {"chatId": chat_id}
         body = {"message": message_text}
 
