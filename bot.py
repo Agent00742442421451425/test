@@ -1219,7 +1219,11 @@ async def show_stock_info(query):
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
             ]),
         )
-    except Exception as e:
+    except (BadRequest, Exception) as e:
+        err_str = str(e).lower()
+        if "not modified" in err_str or "exactly the same" in err_str:
+            await query.answer()
+            return
         await safe_edit_message(query, f"❌ Ошибка чтения склада: `{escape_md(str(e)[:400])}`")
 
 
