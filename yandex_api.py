@@ -825,22 +825,15 @@ class YandexMarketAPI:
         Отправить текстовое сообщение в чат покупателю.
         POST /businesses/{businessId}/chats/message
 
-        API Маркета принимает сообщение как multipart/form-data.
-        Content-Type НЕ передаём вручную — httpx ставит его сам
-        из параметра data=.
+        API Маркета принимает только application/json (не x-www-form-urlencoded).
         """
         url = f"/businesses/{self.business_id}/chats/message"
         params = {"chatId": chat_id}
+        body = {"message": message_text}
 
         log.info(f"POST {url}  chatId={chat_id}  len(msg)={len(message_text)}")
 
-        # data= заставляет httpx отправить form-data
-        # Content-Type выставится автоматически
-        response = self.client.post(
-            url,
-            params=params,
-            data={"message": message_text},
-        )
+        response = self.client.post(url, params=params, json=body)
         if response.status_code == 403:
             log.error(
                 "403 Forbidden при отправке сообщения. "

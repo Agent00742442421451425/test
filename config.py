@@ -24,7 +24,7 @@ BASE_URL = "https://api.partner.market.yandex.ru"
 # Заголовки для запросов
 # Content-Type НЕ указываем — httpx ставит его автоматически:
 #   json=  → application/json
-#   data=  → application/x-www-form-urlencoded  (для чата Маркета)
+#   json=  → application/json  (в т.ч. для чата Маркета)
 HEADERS = {
     "Api-Key": API_TOKEN,
     "Accept": "application/json",
