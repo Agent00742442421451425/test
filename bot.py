@@ -20,7 +20,16 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, ADMIN_IDS
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_GROUP_ID,
+    ADMIN_IDS,
+    STICKER_WELCOME_FILE_ID,
+    STICKER_CELEBRATION_FILE_ID,
+    CUSTOM_EMOJI_BOX,
+    CUSTOM_EMOJI_CHECK,
+    CUSTOM_EMOJI_PARTY,
+)
 from yandex_api import YandexMarketAPI
 import database as db
 import products as products_module
@@ -87,14 +96,24 @@ def escape_html(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _btn(text: str, callback_data: str, style: str | None = None):
-    """Inline-кнопка с опциональным стилем (primary / success / danger). API 9.4+."""
+def _btn(
+    text: str,
+    callback_data: str,
+    style: str | None = None,
+    icon_custom_emoji_id: str | None = None,
+):
+    """Inline-кнопка: стиль (primary/success/danger) и/или иконка (custom emoji). API 9.4+, Premium у владельца бота."""
+    kwargs = {"text": text, "callback_data": callback_data}
+    if style:
+        kwargs["style"] = style
+    if icon_custom_emoji_id and icon_custom_emoji_id.strip():
+        kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id.strip()
     try:
-        if style:
-            return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+        return InlineKeyboardButton(**kwargs)
     except TypeError:
-        pass
-    return InlineKeyboardButton(text=text, callback_data=callback_data)
+        kwargs.pop("style", None)
+        kwargs.pop("icon_custom_emoji_id", None)
+        return InlineKeyboardButton(**kwargs)
 
 
 def back_to_menu_keyboard(extra_row=None):
@@ -103,6 +122,26 @@ def back_to_menu_keyboard(extra_row=None):
     if extra_row:
         rows = extra_row + rows
     return InlineKeyboardMarkup(rows)
+
+
+# Кастомные эмодзи в сообщениях (отображаются у пользователей с Premium; иначе — fallback).
+# ID можно взять из стикерпака или из getCustomEmojiStickers. Пример из документации API:
+PREMIUM_EMOJI_SPARKLES = "5368324170671202286"  # fallback: ✨ в теге
+
+
+def _tg_emoji(emoji_id: str, fallback: str = "✨") -> str:
+    """HTML-тег кастомного эмодзи (владелец бота с Premium видит премиум-эмодзи)."""
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+
+async def _send_sticker_safe(bot, chat_id: int, file_id: str):
+    """Отправить стикер в чат; при ошибке только логируем."""
+    if not file_id:
+        return
+    try:
+        await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+    except Exception as e:
+        logger.debug("Стикер не отправлен (%s): %s", chat_id, e)
 
 
 # Путь к файлу склада аккаунтов
@@ -264,18 +303,18 @@ def build_support_message():
 # ─── Главное меню ────────────────────────────────────────────────────
 
 def main_menu_keyboard():
-    """Клавиатура главного меню (стили кнопок — API 9.4+)."""
+    """Клавиатура главного меню (стили и опционально custom emoji на кнопках — API 9.4+, Premium)."""
     keyboard = [
-        [_btn("📦 Новые заказы", "orders_new", style="primary")],
+        [_btn("📦 Новые заказы", "orders_new", style="primary", icon_custom_emoji_id=CUSTOM_EMOJI_BOX or None)],
         [
             _btn("📊 История заказов", "orders_history"),
-            _btn("🔍 Заказ по ID", "order_check"),
+            _btn("🔍 Заказ по ID", "order_check", icon_custom_emoji_id=CUSTOM_EMOJI_CHECK or None),
         ],
         [
             _btn("📦 Склад", "stock_info", style="success"),
             _btn("➕ Добавить аккаунты", "add_accounts", style="success"),
         ],
-        [_btn("🔄 Синхронизировать остатки", "sync_stock", style="success")],
+        [_btn("🔄 Синхронизировать остатки", "sync_stock", style="success", icon_custom_emoji_id=CUSTOM_EMOJI_PARTY or None)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -299,14 +338,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.debug(f"set_chat_menu_button: {e}")
 
+    welcome_emoji = _tg_emoji(PREMIUM_EMOJI_SPARKLES, "✨")
     await update.message.reply_text(
-        "<b>🟢 Яндекс Маркет DBS Бот</b>\n\n"
+        f"<b>🟢 Яндекс Маркет DBS Бот</b> {welcome_emoji}\n\n"
         "Управление заказами магазина <i>«Склад Ai Hub»</i>\n\n"
         f"👤 Админ: <code>{update.effective_user.id}</code>\n\n"
         "Выберите действие:",
         reply_markup=main_menu_keyboard(),
         parse_mode="HTML",
     )
+    if STICKER_WELCOME_FILE_ID:
+        await _send_sticker_safe(
+            context.bot, update.effective_chat.id, STICKER_WELCOME_FILE_ID
+        )
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -788,14 +832,20 @@ async def auto_deliver_account(query, order_id):
             )
             return
 
+        success_emoji = _tg_emoji(PREMIUM_EMOJI_SPARKLES, "🎉")
         await safe_edit_message(
             query,
-            f"✅ *Аккаунт выдан, заказ отгружен*\n\n{report}",
+            f"✅ {success_emoji} <b>Аккаунт выдан, заказ отгружен</b>\n\n{escape_html(report)}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [_btn("⬅️ В меню", "back_menu")],
             ]),
+            parse_mode="HTML",
         )
+        if STICKER_CELEBRATION_FILE_ID and query.message and query.message.chat_id:
+            await _send_sticker_safe(
+                query.get_bot(), query.message.chat_id, STICKER_CELEBRATION_FILE_ID
+            )
 
         # Уведомление в группу (ЛС админу уже получил ответ через query)
         if TELEGRAM_GROUP_ID:
@@ -1006,14 +1056,22 @@ async def step_delivered_handler(query, order_id):
         if ok:
             delivered_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             db.update_order_status(order_id, our_status="ЗАВЕРШЕН", status="DELIVERED", delivered_at=delivered_at)
+            done_emoji = _tg_emoji(PREMIUM_EMOJI_SPARKLES, "✅")
             await safe_edit_message(
                 query,
-                f"✅ *Заказ доставлен и завершён*\n\n📦 Заказ: `{order_id}`\nСтатус в Маркете: DELIVERED. Заказ не отображается в заявках.",
+                f"{done_emoji} <b>Заказ доставлен и завершён</b>\n\n"
+                f"📦 Заказ: <code>{order_id}</code>\n"
+                "Статус в Маркете: DELIVERED. Заказ не отображается в заявках.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                     [_btn("⬅️ В меню", "back_menu")],
                 ]),
+                parse_mode="HTML",
             )
+            if STICKER_CELEBRATION_FILE_ID and query.message and query.message.chat_id:
+                await _send_sticker_safe(
+                    query.get_bot(), query.message.chat_id, STICKER_CELEBRATION_FILE_ID
+                )
         else:
             await safe_edit_message(
                 query,

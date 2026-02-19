@@ -31,3 +31,16 @@ HEADERS = {
 }
 
 # Данные хранятся в JSON-файлах (accounts.json, orders.json). PostgreSQL не используется.
+
+# Premium-фичи (владелец бота с Telegram Premium):
+# Стикеры: отправляются при /start и при успешной выдаче заказа.
+# Чтобы получить file_id: отправьте боту нужный стикер, затем в логах или через getUpdates найдите message.sticker.file_id.
+STICKER_WELCOME_FILE_ID = os.getenv("STICKER_WELCOME_FILE_ID", "").strip()  # при /start
+STICKER_CELEBRATION_FILE_ID = os.getenv("STICKER_CELEBRATION_FILE_ID", "").strip()  # при успешной выдаче
+
+# Иконки на кнопках (custom emoji): ID из стикерпака. Работает, если у владельца бота Telegram Premium.
+# Как получить ID: отправьте боту сообщение с премиум-стикером/эмодзи → в getUpdates: message.entities[].custom_emoji_id
+# или метод getCustomEmojiStickers. Пример: CUSTOM_EMOJI_BOX=5368324170671202286
+CUSTOM_EMOJI_BOX = os.getenv("CUSTOM_EMOJI_BOX", "").strip()
+CUSTOM_EMOJI_CHECK = os.getenv("CUSTOM_EMOJI_CHECK", "").strip()
+CUSTOM_EMOJI_PARTY = os.getenv("CUSTOM_EMOJI_PARTY", "").strip()
