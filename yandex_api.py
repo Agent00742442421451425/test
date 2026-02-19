@@ -10,6 +10,7 @@
   POST 403 — нет прав на чаты или конфликт Content-Type
 """
 
+import json
 import logging
 import time
 from datetime import date
@@ -521,11 +522,22 @@ class YandexMarketAPI:
                     else:
                         return False, f"boxes: {str(e)[:80]}"
 
+        # После boxes перечитываем заказ — иногда Маркет сам переводит в DELIVERY
+        order_data = self.get_order(order_id)
+        cur_status = order_data.get("order", {}).get("status", "")
+        if cur_status == "DELIVERY":
+            return True, "OK"
+        if cur_status == "DELIVERED":
+            return True, "уже доставлен"
+
         try:
             self.update_order_status(order_id, "DELIVERY", "DELIVERY_SERVICE_RECEIVED")
             return True, "OK"
         except Exception as e:
-            return False, str(e)[:120]
+            err = str(e)
+            if "STATUS_NOT_ALLOWED" in err or "400" in err:
+                return False, "Переход в «Отправлен» недоступен. Проверьте заказ в ЛК Маркета (статус должен быть «Готов к отгрузке» и отгрузка подтверждена)."
+            return False, err[:120]
 
     def set_status_to_delivered(self, order_id):
         """
@@ -865,16 +877,19 @@ class YandexMarketAPI:
     def send_chat_message(self, chat_id, message_text):
         """
         Отправить текстовое сообщение в чат покупателю.
-        POST /v2/businesses/{businessId}/chats/message (документация требует v2).
-        API Маркета принимает только application/json.
+        POST /v2/businesses/{businessId}/chats/message.
+        API Маркета принимает только application/json (иначе 400 BAD_REQUEST).
         """
         url = f"/v2/businesses/{self.business_id}/chats/message"
         params = {"chatId": chat_id}
         body = {"message": message_text}
+        headers = {**self.headers, "Content-Type": "application/json"}
 
         log.info(f"POST {url}  chatId={chat_id}  len(msg)={len(message_text)}")
 
-        response = self.client.post(url, params=params, json=body)
+        response = self.client.post(
+            url, params=params, content=json.dumps(body), headers=headers
+        )
         if response.status_code == 403:
             log.error(
                 "403 Forbidden при отправке сообщения. "

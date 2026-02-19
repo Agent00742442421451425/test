@@ -322,7 +322,7 @@ def main_menu_keyboard():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start — показать главное меню (только админу)."""
+    """Обработчик /start — показать главное меню (только админу). Единое меню без смены оформления."""
     if not is_admin(update):
         logger.warning(
             f"Неизвестный пользователь {update.effective_user.id} "
@@ -331,21 +331,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
-    # Сбрасываем кнопку «Статус магазина» (Menu Button) для этого чата
-    try:
-        await context.bot.set_chat_menu_button(
-            chat_id=update.effective_chat.id,
-            menu_button=MenuButtonDefault(),
-        )
-    except Exception as e:
-        logger.debug(f"set_chat_menu_button: {e}")
-
     welcome_emoji = _tg_emoji(PREMIUM_EMOJI_SPARKLES, "✨")
     await update.message.reply_text(
         f"<b>🟢 Яндекс Маркет DBS Бот</b> {welcome_emoji}\n\n"
         "Управление заказами магазина <i>«Склад Ai Hub»</i>\n\n"
-        f"👤 Админ: <code>{update.effective_user.id}</code>\n\n"
-        "Выберите действие:",
+        "📌 <b>Главное меню</b>\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(),
         parse_mode="HTML",
     )
@@ -356,19 +346,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /menu — показать главное меню (только админу)."""
+    """Обработчик /menu — показать единое главное меню (только админу)."""
     if not is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
-
-    # Сбрасываем кнопку «Статус магазина» (Menu Button) для этого чата
-    try:
-        await context.bot.set_chat_menu_button(
-            chat_id=update.effective_chat.id,
-            menu_button=MenuButtonDefault(),
-        )
-    except Exception as e:
-        logger.debug(f"set_chat_menu_button: {e}")
 
     await update.message.reply_text(
         "📌 <b>Главное меню</b>\n\nВыберите действие:",
@@ -1453,36 +1434,20 @@ async def add_accounts_choose_product(query, context, index_or_no_sku):
 
 
 async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /add — быстрое добавление аккаунтов (только админ)."""
+    """Обработчик /add — всегда ведёт к выбору товара, затем ввод аккаунтов (только админ)."""
     if not is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
-    text = update.message.text
-    # Убираем саму команду /add из текста
-    lines_text = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
-
-    if not lines_text.strip():
-        # Если текста нет — предлагаем перейти к выбору товара и добавлению
-        await update.message.reply_text(
-            "➕ *Добавление аккаунтов*\n\n"
-            "Нажмите кнопку ниже, выберите товар из каталога Маркета и отправьте аккаунты в формате:\n"
-            "`логин ; пароль ; 2fa`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Пополнить склад (выбор товара)", callback_data="add_accounts")],
-                [_btn("⬅️ В меню", "back_menu")],
-            ]),
-        )
-        return
-
-    # Если текст есть — сразу обрабатываем
-    result = _parse_and_add_accounts(lines_text)
+    # Всегда показываем кнопку «Пополнить склад» → выбор товара из каталога Маркета, без добавления без привязки
     await update.message.reply_text(
-        result,
-        parse_mode="Markdown",
+        "➕ <b>Добавление аккаунтов</b>\n\n"
+        "Сначала выберите товар (из ассортимента Яндекс Маркета), затем введите аккаунты в формате:\n"
+        "<code>логин ; пароль ; 2fa</code>\n\n"
+        "Нажмите кнопку ниже:",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
+            [InlineKeyboardButton("➕ Пополнить склад (выбор товара)", callback_data="add_accounts")],
             [_btn("⬅️ В меню", "back_menu")],
         ]),
     )
@@ -1951,6 +1916,7 @@ def main():
     app.add_error_handler(global_error_handler)
 
     print("✅ Бот запущен! Polling заказов каждые 60 сек.")
+    print("⚠️  Важно: должен быть запущен только ОДИН экземпляр (иначе кнопки не работают — 409 Conflict).")
     print(f"👤 Админы: {', '.join(str(a) for a in ADMIN_IDS)}")
     print(f"📢 Уведомления в группу: {TELEGRAM_GROUP_ID}")
 
