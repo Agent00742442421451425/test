@@ -302,10 +302,13 @@ def build_support_message():
     )
 
 
-# ─── Главное меню ────────────────────────────────────────────────────
+# ─── Главное меню (одно на всё: один текст, одна клавиатура) ───────────
+
+# Единственный текст главного меню — используется при /start, /menu и кнопке «В меню».
+MAIN_MENU_MESSAGE = "📌 <b>Главное меню</b>\n\nВыберите действие:"
 
 def main_menu_keyboard():
-    """Клавиатура главного меню (стили и опционально custom emoji на кнопках — API 9.4+, Premium)."""
+    """Единственная клавиатура главного меню. Один стиль, одни кнопки."""
     keyboard = [
         [_btn("📦 Новые заказы", "orders_new", style="primary", icon_custom_emoji_id=CUSTOM_EMOJI_BOX or None)],
         [
@@ -322,7 +325,7 @@ def main_menu_keyboard():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start — показать главное меню (только админу). Единое меню без смены оформления."""
+    """Обработчик /start — показать то же главное меню, что и везде (один дизайн)."""
     if not is_admin(update):
         logger.warning(
             f"Неизвестный пользователь {update.effective_user.id} "
@@ -331,11 +334,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
-    welcome_emoji = _tg_emoji(PREMIUM_EMOJI_SPARKLES, "✨")
     await update.message.reply_text(
-        f"<b>🟢 Яндекс Маркет DBS Бот</b> {welcome_emoji}\n\n"
-        "Управление заказами магазина <i>«Склад Ai Hub»</i>\n\n"
-        "📌 <b>Главное меню</b>\n\nВыберите действие:",
+        MAIN_MENU_MESSAGE,
         reply_markup=main_menu_keyboard(),
         parse_mode="HTML",
     )
@@ -346,13 +346,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /menu — показать единое главное меню (только админу)."""
+    """Обработчик /menu — то же главное меню."""
     if not is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
     await update.message.reply_text(
-        "📌 <b>Главное меню</b>\n\nВыберите действие:",
+        MAIN_MENU_MESSAGE,
         reply_markup=main_menu_keyboard(),
         parse_mode="HTML",
     )
@@ -424,11 +424,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub = data.replace("add_ac_", "", 1)
         await add_accounts_choose_product(query, context, sub)
     elif data == "back_menu":
-        # Сбрасываем режим добавления аккаунтов при возврате в меню
         context.user_data.pop("awaiting_accounts", None)
         await safe_edit_message(
             query,
-            "📌 <b>Главное меню</b>\n\nВыберите действие:",
+            MAIN_MENU_MESSAGE,
             reply_markup=main_menu_keyboard(),
             parse_mode="HTML",
         )
