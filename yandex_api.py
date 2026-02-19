@@ -60,9 +60,8 @@ class YandexMarketAPI:
     def get_offer_mapping_entries(self, sku=None, limit=50, page_token=None):
         """
         Получить маппинг товаров (offer mapping entries).
-        GET /campaigns/{campaignId}/offer-mapping-entries
-        
-        Нужно для получения offerMappingEntryId и warehouseId для обновления остатков.
+        GET /campaigns/{campaignId}/offer-mapping-entries — устарел (403 NO_ACCESS_BY_DEPRECATION_POLICY).
+        Используется только для update_offer_stock (получение offerMappingEntryId и warehouseId).
         """
         url = f"/campaigns/{self.campaign_id}/offer-mapping-entries"
         params = {"limit": min(limit, 200)}
@@ -70,35 +69,51 @@ class YandexMarketAPI:
             params["shopSku"] = sku
         if page_token:
             params["pageToken"] = page_token
-        
+
         log.info(f"GET {url}  params={params}")
         response = self.client.get(url, params=params)
-        self._raise_on_error(response, f"Получение маппинга товаров")
+        self._raise_on_error(response, "Получение маппинга товаров")
+        return response.json()
+
+    def get_campaign_offers_v2(self, limit=200, page_token=None):
+        """
+        Список товаров магазина через актуальный API (не deprecated).
+        POST /v2/campaigns/{campaignId}/offers — В магазине, просмотр товаров.
+        Возвращает {"result": {"offers": [...], "paging": {"nextPageToken": "..."}}}.
+        """
+        url = f"/v2/campaigns/{self.campaign_id}/offers"
+        params = {"limit": min(limit, 200)}
+        if page_token:
+            params["pageToken"] = page_token
+        body = {"statuses": ["PUBLISHED"]}
+        log.info(f"POST {url}  params={params}")
+        response = self.client.post(url, params=params, json=body)
+        self._raise_on_error(response, "Получение списка товаров (v2/offers)")
         return response.json()
 
     def get_all_campaign_products(self):
         """
-        Получить список всех товаров магазина из Яндекс Маркета (каталог кампании).
-        Обходит пагинацию и возвращает список словарей {"sku": shopSku, "name": name}.
-        Название берётся из offer.name или offer.shopSku, если name нет.
+        Получить список всех товаров магазина (каталог кампании).
+        Использует POST v2/campaigns/.../offers (актуальный API; старый offer-mapping-entries даёт 403).
+        Возвращает список словарей {"sku": offerId, "name": offerId или название}.
         """
         result = []
         page_token = None
         while True:
-            data = self.get_offer_mapping_entries(limit=200, page_token=page_token)
-            entries = data.get("result", {}).get("offerMappingEntries", [])
-            for entry in entries:
-                offer = entry.get("offer") or {}
-                sku = (offer.get("shopSku") or "").strip()
+            data = self.get_campaign_offers_v2(limit=200, page_token=page_token)
+            res = data.get("result") or {}
+            offers = res.get("offers") or []
+            for offer in offers:
+                sku = (offer.get("offerId") or "").strip()
                 if not sku:
                     continue
-                name = (offer.get("name") or "").strip() or sku
+                name = (offer.get("name") or offer.get("offerName") or sku).strip() or sku
                 result.append({"sku": sku, "name": name})
-            paging = data.get("result", {}).get("paging", {})
+            paging = res.get("paging") or {}
             page_token = paging.get("nextPageToken")
             if not page_token:
                 break
-        log.info(f"Загружено товаров из каталога Маркета: {len(result)}")
+        log.info(f"Загружено товаров из каталога Маркета (v2): {len(result)}")
         return result
     
     def update_offer_stock(self, sku, count):

@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonDefault
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1863,6 +1863,11 @@ async def poll_new_orders(context: ContextTypes.DEFAULT_TYPE):
                                 reply_markup=success_kb,
                                 parse_mode="Markdown",
                             )
+                        except BadRequest as e:
+                            if "chat not found" in (str(e) or "").lower():
+                                logger.debug(f"Админ {admin_id}: чат не найден (нужно /start с ботом или разблокировать)")
+                            else:
+                                logger.error(f"Ошибка отправки админу {admin_id}: {e}")
                         except Exception as e:
                             logger.error(f"Ошибка отправки админу {admin_id}: {e}")
                 else:
@@ -1932,6 +1937,18 @@ def main():
             logger.warning(f"Не удалось сбросить кнопку меню: {e}")
 
     app.post_init = clear_menu_button
+
+    async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Логируем ошибки; Conflict (второй экземпляр бота) — коротко, без traceback."""
+        err = getattr(context, "error", None)
+        if isinstance(err, Conflict):
+            logger.warning(
+                "Conflict: другой экземпляр бота получает getUpdates. Запускайте только один экземпляр (закройте дубликаты)."
+            )
+            return
+        logger.exception("Необработанное исключение: %s", err)
+
+    app.add_error_handler(global_error_handler)
 
     print("✅ Бот запущен! Polling заказов каждые 60 сек.")
     print(f"👤 Админы: {', '.join(str(a) for a in ADMIN_IDS)}")
