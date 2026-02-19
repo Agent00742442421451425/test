@@ -1315,8 +1315,32 @@ async def show_stock_info(query):
 
 # ─── Добавление аккаунтов через бота ─────────────────────────────────
 
+def _merge_products_with_defaults(products):
+    """
+    Подставить названия из DEFAULT_PRODUCTS, если в товаре нет имени или оно совпадает с SKU.
+    Добавить товары по умолчанию, которых нет в списке (чтобы всегда были оба товара).
+    """
+    sku_to_name = {p.get("sku", "").strip(): (p.get("name") or "").strip() for p in (DEFAULT_PRODUCTS or []) if p.get("sku")}
+    result = []
+    seen_skus = set()
+    for p in products or []:
+        sku = (p.get("sku") or "").strip()
+        if not sku:
+            continue
+        seen_skus.add(sku)
+        name = (p.get("name") or "").strip()
+        if not name or name == sku:
+            name = sku_to_name.get(sku) or sku
+        result.append({"sku": sku, "name": name or sku})
+    for d in (DEFAULT_PRODUCTS or []):
+        sku = (d.get("sku") or "").strip()
+        if sku and sku not in seen_skus:
+            result.append({"sku": sku, "name": (d.get("name") or "").strip() or sku})
+    return result
+
+
 def _build_add_accounts_product_keyboard(products):
-    """Клавиатура выбора товара для пополнения склада. products — список {sku, name}."""
+    """Клавиатура выбора товара. products — уже объединённый список {sku, name} (с названиями)."""
     keyboard = []
     for i, p in enumerate(products):
         name = (p.get("name") or p.get("sku") or "—")[:50]
@@ -1367,6 +1391,7 @@ async def start_add_accounts(query, context):
     if not products and DEFAULT_PRODUCTS:
         products = list(DEFAULT_PRODUCTS)
 
+    products = _merge_products_with_defaults(products)
     context.user_data["add_accounts_products"] = products
     await safe_edit_message(
         query,
@@ -1379,7 +1404,12 @@ async def start_add_accounts(query, context):
 
 async def add_accounts_sync_handler(query, context):
     """Обновить список товаров из Маркета и снова показать выбор."""
-    await safe_edit_message(query, "🔄 Обновляю список товаров из Яндекс Маркета...")
+    await query.answer()
+    await safe_edit_message(
+        query,
+        "🔄 *Обновляю список товаров* из Яндекс Маркета...",
+        reply_markup=None,
+    )
     products, err = await asyncio.to_thread(products_module.sync_products_from_yandex)
     if err:
         await safe_edit_message(
@@ -1392,6 +1422,7 @@ async def add_accounts_sync_handler(query, context):
         )
         return
     products = products_module.load_products()
+    products = _merge_products_with_defaults(products)
     context.user_data["add_accounts_products"] = products
     await safe_edit_message(
         query,
