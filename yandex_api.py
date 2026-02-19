@@ -57,7 +57,7 @@ class YandexMarketAPI:
 
     # ─── PUT-запросы: Обновление остатков ────────────────────────────
     
-    def get_offer_mapping_entries(self, sku=None, limit=50):
+    def get_offer_mapping_entries(self, sku=None, limit=50, page_token=None):
         """
         Получить маппинг товаров (offer mapping entries).
         GET /campaigns/{campaignId}/offer-mapping-entries
@@ -65,14 +65,41 @@ class YandexMarketAPI:
         Нужно для получения offerMappingEntryId и warehouseId для обновления остатков.
         """
         url = f"/campaigns/{self.campaign_id}/offer-mapping-entries"
-        params = {"limit": limit}
+        params = {"limit": min(limit, 200)}
         if sku:
             params["shopSku"] = sku
+        if page_token:
+            params["pageToken"] = page_token
         
         log.info(f"GET {url}  params={params}")
         response = self.client.get(url, params=params)
         self._raise_on_error(response, f"Получение маппинга товаров")
         return response.json()
+
+    def get_all_campaign_products(self):
+        """
+        Получить список всех товаров магазина из Яндекс Маркета (каталог кампании).
+        Обходит пагинацию и возвращает список словарей {"sku": shopSku, "name": name}.
+        Название берётся из offer.name или offer.shopSku, если name нет.
+        """
+        result = []
+        page_token = None
+        while True:
+            data = self.get_offer_mapping_entries(limit=200, page_token=page_token)
+            entries = data.get("result", {}).get("offerMappingEntries", [])
+            for entry in entries:
+                offer = entry.get("offer") or {}
+                sku = (offer.get("shopSku") or "").strip()
+                if not sku:
+                    continue
+                name = (offer.get("name") or "").strip() or sku
+                result.append({"sku": sku, "name": name})
+            paging = data.get("result", {}).get("paging", {})
+            page_token = paging.get("nextPageToken")
+            if not page_token:
+                break
+        log.info(f"Загружено товаров из каталога Маркета: {len(result)}")
+        return result
     
     def update_offer_stock(self, sku, count):
         """

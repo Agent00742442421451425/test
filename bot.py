@@ -23,6 +23,7 @@ from telegram.ext import (
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, ADMIN_IDS
 from yandex_api import YandexMarketAPI
 import database as db
+import products as products_module
 
 # Логирование
 logging.basicConfig(
@@ -358,6 +359,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await step_delivered_handler(query, order_id)
     elif data == "add_accounts":
         await start_add_accounts(query, context)
+    elif data == "add_accounts_sync":
+        await add_accounts_sync_handler(query, context)
+    elif data.startswith("add_ac_"):
+        sub = data.replace("add_ac_", "", 1)
+        await add_accounts_choose_product(query, context, sub)
     elif data == "back_menu":
         # Сбрасываем режим добавления аккаунтов при возврате в меню
         context.user_data.pop("awaiting_accounts", None)
@@ -1229,23 +1235,119 @@ async def show_stock_info(query):
 
 # ─── Добавление аккаунтов через бота ─────────────────────────────────
 
+def _build_add_accounts_product_keyboard(products):
+    """Клавиатура выбора товара для пополнения склада. products — список {sku, name}."""
+    keyboard = []
+    for i, p in enumerate(products):
+        name = (p.get("name") or p.get("sku") or "—")[:50]
+        keyboard.append([
+            InlineKeyboardButton(f"📦 {name}", callback_data=f"add_ac_{i}")
+        ])
+    keyboard.append([
+        InlineKeyboardButton("📦 Без привязки к товару", callback_data="add_ac_no_sku")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("🔄 Обновить список товаров", callback_data="add_accounts_sync")
+    ])
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="back_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def start_add_accounts(query, context):
-    """Начать процесс добавления аккаунтов — показать инструкцию."""
-    context.user_data["awaiting_accounts"] = True
+    """Начать процесс добавления аккаунтов — показать выбор товара из каталога Маркета."""
+    context.user_data.pop("awaiting_accounts", None)
+    context.user_data.pop("add_accounts_sku", None)
+    context.user_data.pop("add_accounts_product_name", None)
+
+    products = products_module.load_products()
+    if not products:
+        await safe_edit_message(
+            query,
+            "⏳ *Список товаров пуст*\n\nСинхронизирую с Яндекс Маркетом...",
+        )
+        products, err = await asyncio.to_thread(products_module.sync_products_from_yandex)
+        if err:
+            await safe_edit_message(
+                query,
+                f"❌ *Не удалось загрузить товары*\n\n`{escape_md(err[:300])}`\n\n"
+                "Проверьте API-ключ и наличие товаров в каталоге Маркета.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Повторить", callback_data="add_accounts")],
+                    [InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")],
+                ]),
+            )
+            return
+        products = products_module.load_products()
+
+    context.user_data["add_accounts_products"] = products
     await safe_edit_message(
         query,
-        "➕ *Добавление аккаунтов на склад*\n\n"
+        "➕ *Пополнить склад*\n\n"
+        "Выберите *товар*, для которого добавляете аккаунты.\n"
+        "Список подтягивается из вашего каталога Яндекс Маркета — новые товары появятся здесь автоматически.",
+        reply_markup=_build_add_accounts_product_keyboard(products),
+    )
+
+
+async def add_accounts_sync_handler(query, context):
+    """Обновить список товаров из Маркета и снова показать выбор."""
+    await safe_edit_message(query, "🔄 Обновляю список товаров из Яндекс Маркета...")
+    products, err = await asyncio.to_thread(products_module.sync_products_from_yandex)
+    if err:
+        await safe_edit_message(
+            query,
+            f"❌ Ошибка синхронизации: `{escape_md(err[:250])}`",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Повторить", callback_data="add_accounts_sync")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="add_accounts")],
+            ]),
+        )
+        return
+    products = products_module.load_products()
+    context.user_data["add_accounts_products"] = products
+    await safe_edit_message(
+        query,
+        f"✅ Загружено товаров: *{len(products)}*\n\nВыберите товар для пополнения склада:",
+        reply_markup=_build_add_accounts_product_keyboard(products),
+    )
+
+
+async def add_accounts_choose_product(query, context, index_or_no_sku):
+    """Пользователь выбрал товар (индекс) или «без привязки». Показать форму ввода аккаунтов."""
+    products = context.user_data.get("add_accounts_products") or []
+    if index_or_no_sku == "no_sku":
+        sku = ""
+        product_name = "(без привязки к товару)"
+    else:
+        try:
+            i = int(index_or_no_sku)
+        except ValueError:
+            await query.answer("Ошибка выбора", show_alert=True)
+            return
+        if i < 0 or i >= len(products):
+            await query.answer("Товар не найден", show_alert=True)
+            return
+        sku = products[i].get("sku", "")
+        product_name = products[i].get("name", "") or sku
+
+    context.user_data["add_accounts_sku"] = sku
+    context.user_data["add_accounts_product_name"] = product_name
+    context.user_data["awaiting_accounts"] = True
+
+    await safe_edit_message(
+        query,
+        f"➕ *Пополнение склада*\n\n"
+        f"📦 Товар: *{escape_md(product_name)}*\n\n"
         "Отправьте аккаунты в формате (каждый с новой строки):\n\n"
         "`логин ; пароль ; 2fa`\n\n"
         "Примеры:\n"
         "`user1@gmail.com ; Pass123!`\n"
-        "`user2@gmail.com ; Pass456! ; BACKUP-CODE`\n"
-        "`user3@mail.ru ; Qwerty1 ;`\n\n"
+        "`user2@gmail.com ; Pass456! ; BACKUP-CODE`\n\n"
         "• Разделитель — точка с запятой `;`\n"
-        "• 2FA — необязательно, можно не указывать\n"
+        "• 2FA необязательно\n"
         "• Можно добавить сразу несколько строк",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
+            [InlineKeyboardButton("❌ Отмена", callback_data="add_accounts")]
         ]),
     )
 
@@ -1261,17 +1363,15 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
     lines_text = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
 
     if not lines_text.strip():
-        # Если текста нет — включаем режим ожидания
-        context.user_data["awaiting_accounts"] = True
+        # Если текста нет — предлагаем перейти к выбору товара и добавлению
         await update.message.reply_text(
             "➕ *Добавление аккаунтов*\n\n"
-            "Отправьте аккаунты в формате:\n"
-            "`логин ; пароль ; 2fa`\n\n"
-            "Каждый аккаунт — с новой строки.\n"
-            "2FA необязателен.",
+            "Нажмите кнопку ниже, выберите товар из каталога Маркета и отправьте аккаунты в формате:\n"
+            "`логин ; пароль ; 2fa`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Отмена", callback_data="back_menu")]
+                [InlineKeyboardButton("➕ Пополнить склад (выбор товара)", callback_data="add_accounts")],
+                [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
             ]),
         )
         return
@@ -1288,9 +1388,10 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
-def _parse_and_add_accounts(text):
+def _parse_and_add_accounts(text, sku=None, product_name=None):
     """
     Парсинг строк в формате `логин ; пароль ; 2fa` и добавление на склад.
+    sku и product_name — привязка к товару (из выбора в боте). Если не переданы — аккаунт без привязки.
     Возвращает текстовый отчёт.
     """
     lines = text.strip().split("\n")
@@ -1298,6 +1399,8 @@ def _parse_and_add_accounts(text):
     errors = []
 
     data = load_accounts()
+    sku = (sku or "").strip()
+    product_name = (product_name or "").strip()
 
     for i, line in enumerate(lines, 1):
         line = line.strip()
@@ -1324,8 +1427,8 @@ def _parse_and_add_accounts(text):
             continue
 
         account = {
-            "product": "",
-            "sku": "",
+            "product": product_name,
+            "sku": sku,
             "login": login,
             "password": password,
             "2fa": twofa,
@@ -1513,7 +1616,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Проверяем режим добавления аккаунтов
     if context.user_data.get("awaiting_accounts"):
         context.user_data["awaiting_accounts"] = False
-        result = _parse_and_add_accounts(text)
+        sku = context.user_data.pop("add_accounts_sku", None) or ""
+        product_name = context.user_data.pop("add_accounts_product_name", None) or ""
+        result = _parse_and_add_accounts(text, sku=sku, product_name=product_name)
 
         await update.message.reply_text(
             result,
