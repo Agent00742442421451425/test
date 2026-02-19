@@ -79,6 +79,32 @@ def escape_md(s):
     return s
 
 
+def escape_html(s):
+    """Экранировать для Telegram HTML (parse_mode='HTML')."""
+    if s is None:
+        return ""
+    s = str(s)
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _btn(text: str, callback_data: str, style: str | None = None):
+    """Inline-кнопка с опциональным стилем (primary / success / danger). API 9.4+."""
+    try:
+        if style:
+            return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+    except TypeError:
+        pass
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+def back_to_menu_keyboard(extra_row=None):
+    """Кнопка «В меню» и опционально дополнительный ряд кнопок."""
+    rows = [[_btn("⬅️ В меню", "back_menu")]]
+    if extra_row:
+        rows = extra_row + rows
+    return InlineKeyboardMarkup(rows)
+
+
 # Путь к файлу склада аккаунтов
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
 
@@ -238,14 +264,18 @@ def build_support_message():
 # ─── Главное меню ────────────────────────────────────────────────────
 
 def main_menu_keyboard():
-    """Клавиатура главного меню."""
+    """Клавиатура главного меню (стили кнопок — API 9.4+)."""
     keyboard = [
-        [InlineKeyboardButton("📦 Новые заказы", callback_data="orders_new")],
-        [InlineKeyboardButton("📊 История заказов (БД)", callback_data="orders_history")],
-        [InlineKeyboardButton("🔄 Проверить заказ по ID", callback_data="order_check")],
-        [InlineKeyboardButton("📦 Склад аккаунтов", callback_data="stock_info")],
-        [InlineKeyboardButton("➕ Добавить аккаунты", callback_data="add_accounts")],
-        [InlineKeyboardButton("🔄 Синхронизировать остатки", callback_data="sync_stock")],
+        [_btn("📦 Новые заказы", "orders_new", style="primary")],
+        [
+            _btn("📊 История заказов", "orders_history"),
+            _btn("🔍 Заказ по ID", "order_check"),
+        ],
+        [
+            _btn("📦 Склад", "stock_info", style="success"),
+            _btn("➕ Добавить аккаунты", "add_accounts", style="success"),
+        ],
+        [_btn("🔄 Синхронизировать остатки", "sync_stock", style="success")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -270,13 +300,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"set_chat_menu_button: {e}")
 
     await update.message.reply_text(
-        "🟢 *Яндекс Маркет DBS Бот*\n\n"
-        "Управление заказами магазина\n"
-        "«Склад Ai Hub»\n\n"
-        f"👤 Админ: `{update.effective_user.id}`\n\n"
+        "<b>🟢 Яндекс Маркет DBS Бот</b>\n\n"
+        "Управление заказами магазина <i>«Склад Ai Hub»</i>\n\n"
+        f"👤 Админ: <code>{update.effective_user.id}</code>\n\n"
         "Выберите действие:",
         reply_markup=main_menu_keyboard(),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -296,9 +325,9 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"set_chat_menu_button: {e}")
 
     await update.message.reply_text(
-        "📌 *Главное меню*\n\nВыберите действие:",
+        "📌 <b>Главное меню</b>\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -329,8 +358,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "order_check":
         await safe_edit_message(
             query,
-            "🔍 Отправьте ID заказа командой:\n"
-            "`/order 54172200065`",
+            "🔍 <b>Проверка заказа по ID</b>\n\n"
+            "Отправьте команду:\n"
+            "<code>/order 54172200065</code>",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="HTML",
         )
     elif data == "stock_info":
         await show_stock_info(query)
@@ -369,8 +401,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_accounts", None)
         await safe_edit_message(
             query,
-            "📌 *Главное меню*\n\nВыберите действие:",
+            "📌 <b>Главное меню</b>\n\nВыберите действие:",
             reply_markup=main_menu_keyboard(),
+            parse_mode="HTML",
         )
 
 
@@ -395,10 +428,10 @@ async def show_orders(query, status=None, page=1):
             status_text = " (новые)" if status == "PROCESSING" else ""
             await safe_edit_message(
                 query,
-                f"📭 Заказов{status_text} не найдено.\n\n_Список из локальной БД \\(orders\\.json\\)\\. Очистка заказов очищает и этот список\\._",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")]
-                ]),
+                f"📭 Заказов{status_text} не найдено.\n\n"
+                "<i>Список из локальной БД (orders.json). Очистка заказов очищает и этот список.</i>",
+                reply_markup=back_to_menu_keyboard(),
+                parse_mode="HTML",
             )
             return
 
@@ -448,7 +481,7 @@ async def show_orders(query, status=None, page=1):
         if nav_buttons:
             keyboard.append(nav_buttons)
 
-        keyboard.append([InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")])
+        keyboard.append([_btn("⬅️ В меню", "back_menu")])
 
         await safe_edit_message(
             query,
@@ -463,7 +496,7 @@ async def show_orders(query, status=None, page=1):
             query,
             f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -483,11 +516,10 @@ async def show_orders_history(query, page=1):
         if not orders:
             await safe_edit_message(
                 query,
-                "📭 *История заказов пуста*\n\n"
+                "📭 <b>История заказов пуста</b>\n\n"
                 "Заказы будут записываться сюда автоматически при обработке.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
-                ]),
+                reply_markup=back_to_menu_keyboard(),
+                parse_mode="HTML",
             )
             return
 
@@ -533,7 +565,7 @@ async def show_orders_history(query, page=1):
         if nav_buttons:
             keyboard.append(nav_buttons)
 
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")])
+        keyboard.append([_btn("⬅️ В меню", "back_menu")])
 
         await safe_edit_message(
             query,
@@ -547,7 +579,7 @@ async def show_orders_history(query, page=1):
             query,
             f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -606,35 +638,35 @@ async def show_order_detail(query, order_id):
         keyboard = []
         if status == "PROCESSING" and our_status == "НОВЫЙ":
             keyboard.append([
-                InlineKeyboardButton("🔑 Выдать аккаунт (авто)", callback_data=f"auto_deliver_{order_id}"),
+                _btn("🔑 Выдать аккаунт (авто)", f"auto_deliver_{order_id}", style="primary"),
             ])
             keyboard.append([
-                InlineKeyboardButton("👨‍💼 Ручная обработка (менеджер)", callback_data=f"manual_process_{order_id}"),
+                _btn("👨‍💼 Ручная обработка", f"manual_process_{order_id}"),
             ])
             keyboard.append([
-                InlineKeyboardButton("✅ Подтвердить передачу", callback_data=f"order_confirm_{order_id}"),
+                _btn("✅ Подтвердить передачу", f"order_confirm_{order_id}", style="success"),
             ])
 
         # Этап «Отправить»: заказ отгружен (READY_TO_SHIP + boxes), переводим в DELIVERY
         if status == "PROCESSING" and (our_status == "ОТГРУЖЕН" or substatus == "READY_TO_SHIP"):
             keyboard.append([
-                InlineKeyboardButton("📤 Отправить", callback_data=f"step_delivery_{order_id}"),
+                _btn("📤 Отправить", f"step_delivery_{order_id}", style="primary"),
             ])
         if status == "DELIVERY":
             keyboard.append([
-                InlineKeyboardButton("✅ Доставлен", callback_data=f"step_delivered_{order_id}"),
+                _btn("✅ Доставлен", f"step_delivered_{order_id}", style="success"),
             ])
         if status == "DELIVERED":
             keyboard.append([
-                InlineKeyboardButton("🏁 Заказ завершён", callback_data=f"order_detail_{order_id}"),
+                _btn("🏁 Заказ завершён", f"order_detail_{order_id}"),
             ])
 
         if status == "PROCESSING" and substatus == "READY_TO_SHIP" and our_status != "ОТГРУЖЕН":
             keyboard.append([
-                InlineKeyboardButton("🔄 Обновить статус до DELIVERED", callback_data=f"force_delivered_{order_id}"),
+                _btn("🔄 Обновить до DELIVERED", f"force_delivered_{order_id}"),
             ])
 
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")])
+        keyboard.append([_btn("⬅️ В меню", "back_menu")])
 
         await safe_edit_message(
             query,
@@ -648,7 +680,7 @@ async def show_order_detail(query, order_id):
             query,
             f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -751,7 +783,7 @@ async def auto_deliver_account(query, order_id):
                 f"❌ *Не удалось выдать аккаунт*\n\n{report}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("👨‍💼 Ручная обработка", callback_data=f"manual_process_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
             return
@@ -761,7 +793,7 @@ async def auto_deliver_account(query, order_id):
             f"✅ *Аккаунт выдан, заказ отгружен*\n\n{report}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
 
@@ -783,7 +815,7 @@ async def auto_deliver_account(query, order_id):
             f"❌ Ошибка: `{escape_md(str(e)[:400])}`\n\nПопробуйте ручную обработку.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("👨‍💼 Ручная обработка", callback_data=f"manual_process_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
 
@@ -830,7 +862,7 @@ async def manual_process_order(query, order_id, context):
             query,
             f"❌ Ошибка: `{escape_md(str(e)[:400])}`",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -873,7 +905,7 @@ async def force_update_to_delivered(query, order_id):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
             return
@@ -913,7 +945,7 @@ async def force_update_to_delivered(query, order_id):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
                 [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
 
@@ -927,7 +959,7 @@ async def force_update_to_delivered(query, order_id):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Повторить", callback_data=f"force_delivered_{order_id}")],
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
 
@@ -948,7 +980,7 @@ async def step_delivery_handler(query, order_id):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Доставлен", callback_data=f"step_delivered_{order_id}")],
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
         else:
@@ -957,7 +989,7 @@ async def step_delivery_handler(query, order_id):
                 f"❌ Не удалось перевести в «Отправлен»\n\n📦 Заказ: `{order_id}`\n`{escape_md(msg[:200])}`",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
     except Exception as e:
@@ -979,7 +1011,7 @@ async def step_delivered_handler(query, order_id):
                 f"✅ *Заказ доставлен и завершён*\n\n📦 Заказ: `{order_id}`\nСтатус в Маркете: DELIVERED. Заказ не отображается в заявках.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
         else:
@@ -988,7 +1020,7 @@ async def step_delivered_handler(query, order_id):
                 f"❌ Не удалось перевести в «Доставлен»\n\n📦 Заказ: `{order_id}`\n`{escape_md(msg[:200])}`",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
     except Exception as e:
@@ -1010,7 +1042,7 @@ async def confirm_order(query, order_id):
             f"Статус изменён на READY\\_TO\\_SHIP",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
     except Exception as e:
@@ -1019,7 +1051,7 @@ async def confirm_order(query, order_id):
             query,
             f"❌ Ошибка подтверждения: {e}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -1072,7 +1104,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([
                 InlineKeyboardButton("👨‍💼 Ручная обработка", callback_data=f"manual_process_{order_id}")
             ])
-        keyboard.append([InlineKeyboardButton("📌 Меню", callback_data="back_menu")])
+        keyboard.append([_btn("⬅️ В меню", "back_menu")])
 
         await update.message.reply_text(
             text,
@@ -1117,7 +1149,7 @@ async def sync_stock_handler(query):
                 query,
                 msg,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                    [_btn("⬅️ В меню", "back_menu")]
                 ]),
             )
             return
@@ -1138,7 +1170,7 @@ async def sync_stock_handler(query):
                 query,
                 text,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                    [_btn("⬅️ В меню", "back_menu")]
                 ]),
             )
         except Exception as sync_error:
@@ -1162,8 +1194,8 @@ async def sync_stock_handler(query):
                 query,
                 text,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                    [_btn("🔄 Повторить", "sync_stock", style="primary")],
+                    [_btn("⬅️ В меню", "back_menu")]
                 ]),
             )
         
@@ -1176,7 +1208,7 @@ async def sync_stock_handler(query):
             f"Проверьте права API-ключа и настройки товаров.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Повторить", callback_data="sync_stock")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
 
@@ -1222,7 +1254,7 @@ async def show_stock_info(query):
             query,
             text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")]
+                [_btn("⬅️ В меню", "back_menu")]
             ]),
         )
     except (BadRequest, Exception) as e:
@@ -1247,9 +1279,9 @@ def _build_add_accounts_product_keyboard(products):
         InlineKeyboardButton("📦 Без привязки к товару", callback_data="add_ac_no_sku")
     ])
     keyboard.append([
-        InlineKeyboardButton("🔄 Обновить список товаров", callback_data="add_accounts_sync")
+        _btn("🔄 Обновить список товаров", "add_accounts_sync", style="primary")
     ])
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="back_menu")])
+    keyboard.append([_btn("❌ Отмена", "back_menu", style="danger")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -1272,8 +1304,8 @@ async def start_add_accounts(query, context):
                 f"❌ *Не удалось загрузить товары*\n\n`{escape_md(err[:300])}`\n\n"
                 "Проверьте API-ключ и наличие товаров в каталоге Маркета.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Повторить", callback_data="add_accounts")],
-                    [InlineKeyboardButton("⬅️ В меню", callback_data="back_menu")],
+                    [_btn("🔄 Повторить", "add_accounts", style="primary")],
+                    [_btn("⬅️ В меню", "back_menu")],
                 ]),
             )
             return
@@ -1298,8 +1330,8 @@ async def add_accounts_sync_handler(query, context):
             query,
             f"❌ Ошибка синхронизации: `{escape_md(err[:250])}`",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Повторить", callback_data="add_accounts_sync")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="add_accounts")],
+                [_btn("🔄 Повторить", "add_accounts_sync", style="primary")],
+                [_btn("⬅️ К выбору товара", "add_accounts")],
             ]),
         )
         return
@@ -1371,7 +1403,7 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Пополнить склад (выбор товара)", callback_data="add_accounts")],
-                [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
         return
@@ -1383,7 +1415,7 @@ async def add_accounts_command(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
-            [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+            [_btn("⬅️ В меню", "back_menu")],
         ]),
     )
 
@@ -1579,7 +1611,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("📋 Детали заказа", callback_data=f"order_detail_{order_id}")],
-                        [InlineKeyboardButton("⬅️ Назад", callback_data="back_menu")],
+                        [_btn("⬅️ В меню", "back_menu")],
                     ]),
                 )
 
@@ -1626,7 +1658,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_accounts")],
                 [InlineKeyboardButton("📦 Склад", callback_data="stock_info")],
-                [InlineKeyboardButton("📌 Меню", callback_data="back_menu")],
+                [_btn("⬅️ В меню", "back_menu")],
             ]),
         )
 
