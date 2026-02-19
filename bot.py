@@ -2,6 +2,7 @@
 Telegram-бот для управления заказами Яндекс Маркет (DBS).
 Запуск: python bot.py
 """
+from __future__ import annotations
 
 import asyncio
 import json
