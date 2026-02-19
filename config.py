@@ -44,3 +44,20 @@ STICKER_CELEBRATION_FILE_ID = os.getenv("STICKER_CELEBRATION_FILE_ID", "").strip
 CUSTOM_EMOJI_BOX = os.getenv("CUSTOM_EMOJI_BOX", "").strip()
 CUSTOM_EMOJI_CHECK = os.getenv("CUSTOM_EMOJI_CHECK", "").strip()
 CUSTOM_EMOJI_PARTY = os.getenv("CUSTOM_EMOJI_PARTY", "").strip()
+
+# Товары по умолчанию для выбора при добавлении аккаунтов (если products.json пуст или синхронизация не удалась).
+# Формат в .env: DEFAULT_PRODUCTS='[{"sku":"5364535435636","name":"Ключ активации Win 10"},{"sku":"53535435","name":"Cursor AI"}]'
+_default_products_json = os.getenv("DEFAULT_PRODUCTS", "").strip()
+if _default_products_json:
+    try:
+        import json as _json
+        DEFAULT_PRODUCTS = _json.loads(_default_products_json)
+        if not isinstance(DEFAULT_PRODUCTS, list):
+            DEFAULT_PRODUCTS = []
+    except Exception:
+        DEFAULT_PRODUCTS = []
+else:
+    DEFAULT_PRODUCTS = [
+        {"sku": "5364535435636", "name": "Ключ активации Win 10"},
+        {"sku": "53535435", "name": "Cursor AI"},
+    ]

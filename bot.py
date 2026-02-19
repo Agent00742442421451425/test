@@ -30,6 +30,7 @@ from config import (
     CUSTOM_EMOJI_BOX,
     CUSTOM_EMOJI_CHECK,
     CUSTOM_EMOJI_PARTY,
+    DEFAULT_PRODUCTS,
 )
 from yandex_api import YandexMarketAPI
 import database as db
@@ -1345,7 +1346,7 @@ def _build_add_accounts_product_keyboard(products):
 
 
 async def start_add_accounts(query, context):
-    """Начать процесс добавления аккаунтов — показать выбор товара из каталога Маркета."""
+    """Начать процесс добавления аккаунтов — показать выбор товара (из каталога Маркета или список по умолчанию)."""
     context.user_data.pop("awaiting_accounts", None)
     context.user_data.pop("add_accounts_sku", None)
     context.user_data.pop("add_accounts_product_name", None)
@@ -1357,25 +1358,33 @@ async def start_add_accounts(query, context):
             "⏳ *Список товаров пуст*\n\nСинхронизирую с Яндекс Маркетом...",
         )
         products, err = await asyncio.to_thread(products_module.sync_products_from_yandex)
-        if err:
+        if not products:
+            products = products_module.load_products()
+        if not products and err:
+            # Синхронизация не удалась — показываем товары по умолчанию, чтобы кнопка выбора товара всегда была
+            products = list(DEFAULT_PRODUCTS) if DEFAULT_PRODUCTS else []
             await safe_edit_message(
                 query,
-                f"❌ *Не удалось загрузить товары*\n\n`{escape_md(err[:300])}`\n\n"
-                "Проверьте API-ключ и наличие товаров в каталоге Маркета.",
-                reply_markup=InlineKeyboardMarkup([
-                    [_btn("🔄 Повторить", "add_accounts", style="primary")],
-                    [_btn("⬅️ В меню", "back_menu")],
-                ]),
+                f"⚠️ *Не удалось загрузить каталог Маркета*\n\n`{escape_md(err[:200])}`\n\n"
+                "Ниже — *товары по умолчанию* для выбора. Можно добавить аккаунты к любому из них.\n"
+                "После настройки API синхронизация подтянет полный каталог.",
+                reply_markup=_build_add_accounts_product_keyboard(products),
             )
+            context.user_data["add_accounts_products"] = products
             return
-        products = products_module.load_products()
+        if not products:
+            products = list(DEFAULT_PRODUCTS) if DEFAULT_PRODUCTS else []
+
+    # Если каталог пуст после синхронизации — подставляем товары по умолчанию
+    if not products and DEFAULT_PRODUCTS:
+        products = list(DEFAULT_PRODUCTS)
 
     context.user_data["add_accounts_products"] = products
     await safe_edit_message(
         query,
         "➕ *Пополнить склад*\n\n"
         "Выберите *товар*, для которого добавляете аккаунты.\n"
-        "Список подтягивается из вашего каталога Яндекс Маркета — новые товары появятся здесь автоматически.",
+        "Список подтягивается из каталога Яндекс Маркета; при пустом каталоге показываются товары по умолчанию.",
         reply_markup=_build_add_accounts_product_keyboard(products),
     )
 
